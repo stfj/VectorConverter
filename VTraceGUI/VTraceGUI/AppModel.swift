@@ -132,6 +132,22 @@ final class AppModel {
             }
         }
 
+        // ⌘C / ⌘V: handle here because the preview WKWebView becomes first
+        // responder when clicked and swallows these key equivalents before
+        // the menu bar sees them.
+        if event.type == .keyDown,
+           event.modifierFlags.intersection([.command, .option, .control, .shift]) == [.command],
+           let key = event.charactersIgnoringModifiers?.lowercased() {
+            if key == "c", svgText != nil {
+                copySVGToClipboard()
+                return nil
+            }
+            if key == "v" {
+                pasteFromClipboard()
+                return nil
+            }
+        }
+
         switch event.keyCode {
         case 49: // space: hand tool while held (and hide control points)
             if event.type == .keyDown {
@@ -217,21 +233,31 @@ final class AppModel {
     }
 
     func pasteFromClipboard() {
-        let pasteboard = NSPasteboard.general
-        let options: [NSPasteboard.ReadingOptionKey: Any] =
-            [.urlReadingContentsConformToTypes: [UTType.image.identifier]]
-        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
+        if !loadImage(fromPasteboard: .general, fallbackName: "pasted-image") {
+            errorMessage = "No image on the clipboard."
+        }
+    }
+
+    /// Shared by paste and drag-and-drop. Returns false if the pasteboard
+    /// holds nothing readable as an image.
+    @discardableResult
+    func loadImage(fromPasteboard pasteboard: NSPasteboard, fallbackName: String) -> Bool {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                             options: Self.imageURLReadingOptions) as? [URL],
            let url = urls.first {
             loadImage(from: url)
-            return
+            return true
         }
         if let data = pasteboard.data(forType: .png) ?? pasteboard.data(forType: .tiff) {
-            sourceName = "pasted-image"
+            sourceName = fallbackName
             loadImage(data: data)
-            return
+            return true
         }
-        errorMessage = "No image on the clipboard."
+        return false
     }
+
+    static let imageURLReadingOptions: [NSPasteboard.ReadingOptionKey: Any] =
+        [.urlReadingContentsConformToTypes: [UTType.image.identifier]]
 
     func openImagePanel() {
         let panel = NSOpenPanel()

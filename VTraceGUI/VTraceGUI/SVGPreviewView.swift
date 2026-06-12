@@ -9,6 +9,41 @@
 
 import SwiftUI
 import WebKit
+import UniformTypeIdentifiers
+
+/// WKWebView registers itself for drags, so image drops over the preview never
+/// reach SwiftUI's onDrop. Intercept them here and hand them to the app instead.
+final class ImageDropWebView: WKWebView {
+    var onImageDrop: ((NSPasteboard) -> Bool)?
+
+    private func pasteboardHasImage(_ sender: NSDraggingInfo) -> Bool {
+        let pasteboard = sender.draggingPasteboard
+        if pasteboard.canReadObject(forClasses: [NSURL.self],
+                                    options: AppModel.imageURLReadingOptions) {
+            return true
+        }
+        return pasteboard.data(forType: .png) != nil || pasteboard.data(forType: .tiff) != nil
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        pasteboardHasImage(sender) ? .copy : super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        pasteboardHasImage(sender) ? .copy : super.draggingUpdated(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        pasteboardHasImage(sender) ? true : super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if pasteboardHasImage(sender), let onImageDrop {
+            return onImageDrop(sender.draggingPasteboard)
+        }
+        return super.performDragOperation(sender)
+    }
+}
 
 struct SVGPreviewView: NSViewRepresentable {
     let model: AppModel
@@ -20,8 +55,12 @@ struct SVGPreviewView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(context.coordinator, name: "pathClick")
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = ImageDropWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
+        let model = model
+        webView.onImageDrop = { pasteboard in
+            model.loadImage(fromPasteboard: pasteboard, fallbackName: "dropped-image")
+        }
         let pageURL = model.workDirectory.appendingPathComponent("preview.html")
         try? Self.pageHTML.write(to: pageURL, atomically: true, encoding: .utf8)
         webView.loadFileURL(pageURL, allowingReadAccessTo: model.workDirectory)

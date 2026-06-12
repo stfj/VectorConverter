@@ -281,6 +281,9 @@ typedef unsigned int swift_uint4  __attribute__((__ext_vector_type__(4)));
 #if __has_warning("-Watimport-in-framework-header")
 #pragma clang diagnostic ignored "-Watimport-in-framework-header"
 #endif
+@import AppKit;
+@import CoreFoundation;
+@import WebKit;
 #endif
 
 #endif
@@ -302,6 +305,21 @@ typedef unsigned int swift_uint4  __attribute__((__ext_vector_type__(4)));
 #endif
 
 #if defined(__OBJC__)
+
+@protocol NSDraggingInfo;
+@class WKWebViewConfiguration;
+@class NSCoder;
+/// WKWebView registers itself for drags, so image drops over the preview never
+/// reach SwiftUI’s onDrop. Intercept them here and hand them to the app instead.
+SWIFT_CLASS("_TtC9VTraceGUI16ImageDropWebView")
+@interface ImageDropWebView : WKWebView
+- (NSDragOperation)draggingEntered:(id <NSDraggingInfo> _Nonnull)sender SWIFT_WARN_UNUSED_RESULT;
+- (NSDragOperation)draggingUpdated:(id <NSDraggingInfo> _Nonnull)sender SWIFT_WARN_UNUSED_RESULT;
+- (BOOL)prepareForDragOperation:(id <NSDraggingInfo> _Nonnull)sender SWIFT_WARN_UNUSED_RESULT;
+- (BOOL)performDragOperation:(id <NSDraggingInfo> _Nonnull)sender SWIFT_WARN_UNUSED_RESULT;
+- (nonnull instancetype)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration * _Nonnull)configuration OBJC_DESIGNATED_INITIALIZER;
+- (nullable instancetype)initWithCoder:(NSCoder * _Nonnull)coder OBJC_DESIGNATED_INITIALIZER;
+@end
 
 #endif
 #if __has_attribute(external_source_symbol)

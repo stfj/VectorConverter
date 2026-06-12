@@ -22,11 +22,11 @@
 		</data>
 		<key>Resources/upscayl-bin</key>
 		<data>
-		LeQZBfSw/4Ezwgh3QYRMBHt7/NI=
+		lmhXAdwnG0H5vG3/hrSIpsbX5Ow=
 		</data>
 		<key>Resources/vtracer</key>
 		<data>
-		4bA6pa7/LEbDpnFWXaz2UHFNo3o=
+		8hybKuPjWZzaCnZ+kvGsGRjmozw=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -35,7 +35,7 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			J5CMcKAsHfDhl/5O/gG9qTciPl0=
+			svvIIU3OtZEsjWbva1dw1l3RL3c=
 			</data>
 			<key>requirement</key>
 			<string>identifier "VTraceGUI.debug" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: Zach Gage (RGBPC674D6)" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */</string>
@@ -81,14 +81,14 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			ehvDO9+VFQDZ1Hr8DyvzTcNVOldxQU18yzZulNEsH1c=
+			ItaYK9jtO+WQ/JG6iuJ/Um89jzR3oSr7KRNKFf4UVME=
 			</data>
 		</dict>
 		<key>Resources/vtracer</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			1DHI+xXRTFUpGL3bGh0k1POphd2gC48wnxNqiXtLHDQ=
+			ZPjPJQKp77OeV5BDXEQsPzWS7RXEQPfGv8RY/wjF0is=
 			</data>
 		</dict>
 	</dict>
