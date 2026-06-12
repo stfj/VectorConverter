@@ -1,4 +1,12 @@
-mac os x gui for https://github.com/visioncortex/vtracer that also includes a bunch of editing and vector simplification tools
+mac os x gui for converting raster images to vector
+
+paste or drag a bitmap in.
+command-c or command-s to get a svg out.
+space bar to pan / hide control points
+z to zoom tool
+v to cursor tool
+
+delete / command-z to delete shapes you dont want or undo that.
 
 ## Third-party software
 
