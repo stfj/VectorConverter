@@ -48,7 +48,18 @@ struct ContentView: View {
                 SVGPreviewView(model: model)
             }
 
-            if model.isConverting {
+            if model.isUpscaling {
+                ProgressView(value: model.upscaleProgress) {
+                    Text("Upscayling… \(Int(model.upscaleProgress * 100))%")
+                        .font(.caption)
+                }
+                .controlSize(.small)
+                .frame(width: 160)
+                .padding(10)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(12)
+            } else if model.isConverting {
                 ProgressView()
                     .controlSize(.small)
                     .padding(10)

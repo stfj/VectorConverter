@@ -36,10 +36,18 @@
       },
       {
         "comment": "",
+        "key": "Upscayling… %lld%%",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 53
+        }
+      },
+      {
+        "comment": "",
         "key": "Drag an image here",
         "location": {
           "startingColumn": 18,
-          "startingLine": 78
+          "startingLine": 89
         }
       },
       {
@@ -47,7 +55,7 @@
         "key": "paste with ⌘V, or",
         "location": {
           "startingColumn": 18,
-          "startingLine": 80
+          "startingLine": 91
         }
       },
       {
@@ -55,7 +63,7 @@
         "key": "Choose Image…",
         "location": {
           "startingColumn": 20,
-          "startingLine": 82
+          "startingLine": 93
         }
       },
       {
@@ -63,7 +71,7 @@
         "key": "%lld × %lld px",
         "location": {
           "startingColumn": 22,
-          "startingLine": 98
+          "startingLine": 109
         }
       },
       {
@@ -71,7 +79,7 @@
         "key": "%lld paths",
         "location": {
           "startingColumn": 22,
-          "startingLine": 101
+          "startingLine": 112
         }
       },
       {
@@ -79,7 +87,7 @@
         "key": "%@ → %@ points",
         "location": {
           "startingColumn": 26,
-          "startingLine": 105
+          "startingLine": 116
         }
       },
       {
@@ -87,7 +95,7 @@
         "key": "%@ points",
         "location": {
           "startingColumn": 26,
-          "startingLine": 107
+          "startingLine": 118
         }
       },
       {
@@ -95,7 +103,7 @@
         "key": "%@ nodes",
         "location": {
           "startingColumn": 22,
-          "startingLine": 111
+          "startingLine": 122
         }
       },
       {
@@ -103,7 +111,7 @@
         "key": "shape %lld selected",
         "location": {
           "startingColumn": 22,
-          "startingLine": 117
+          "startingLine": 128
         }
       },
       {
@@ -111,7 +119,7 @@
         "key": "zoom tool — click to zoom, ⌥-click out, V for cursor",
         "location": {
           "startingColumn": 22,
-          "startingLine": 121
+          "startingLine": 132
         }
       }
     ]

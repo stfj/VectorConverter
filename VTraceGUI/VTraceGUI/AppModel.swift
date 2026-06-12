@@ -19,6 +19,12 @@ final class AppModel {
         didSet { if settings != oldValue { scheduleConversion() } }
     }
 
+    /// AI upscaling (Upscayl, Digital Art model) applied to the source image
+    /// before tracing; re-runs from the cached original on any change.
+    var upscale = UpscaleSettings() {
+        didSet { if upscale != oldValue { prepareInput() } }
+    }
+
     /// Post-processing applied on top of vtracer's output; re-runs on the
     /// cached raw SVG without invoking the CLI again.
     var simplification = SimplificationSettings() {
@@ -52,6 +58,11 @@ final class AppModel {
     /// Bumped each time a new source image is loaded; the preview keys off this.
     private(set) var imageVersion = 0
     private(set) var sourcePixelSize: CGSize?
+    /// Pixel size of the image as loaded, before any upscaling.
+    private(set) var originalPixelSize: CGSize?
+    private(set) var isUpscaling = false
+    /// 0...1 while isUpscaling.
+    private(set) var upscaleProgress = 0.0
     private(set) var svgText: String?
     private(set) var isConverting = false
     private(set) var pathCount = 0
@@ -64,14 +75,21 @@ final class AppModel {
     /// Holds the preview page and the normalized input PNG.
     let workDirectory: URL
     var inputPNGURL: URL { workDirectory.appendingPathComponent("input.png") }
+    /// The image as loaded, before any upscaling; upscale re-runs start here.
+    var originalPNGURL: URL { workDirectory.appendingPathComponent("original.png") }
 
     private var sourceName = "export"
     private var hasImage = false
     private var rawSVG: String?
     private let runner = VTracerRunner()
+    private let upscaler = UpscaylRunner()
+    private var upscaleTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
     private var postProcessDebounceTask: Task<Void, Never>?
     private var generation = 0
+    /// Staleness for the upscale pipeline only; `generation` also moves on
+    /// trace/post-process changes, which shouldn't orphan a finishing upscale.
+    private var inputGeneration = 0
 
     init() {
         workDirectory = FileManager.default.temporaryDirectory
@@ -168,12 +186,15 @@ final class AppModel {
             return
         }
         do {
+            try png.write(to: originalPNGURL)
+            // Show the source bitmap right away; upscaling swaps it out when done.
             try png.write(to: inputPNGURL)
         } catch {
             errorMessage = error.localizedDescription
             return
         }
-        sourcePixelSize = CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
+        originalPixelSize = CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
+        sourcePixelSize = originalPixelSize
         hasImage = true
         svgText = nil
         rawSVG = nil
@@ -187,7 +208,7 @@ final class AppModel {
         deletedPaths = []
         deletionStack = []
         imageVersion += 1
-        scheduleConversion(immediately: true)
+        prepareInput()
     }
 
     private static func repViaNSImage(_ data: Data) -> NSBitmapImageRep? {
@@ -273,6 +294,68 @@ final class AppModel {
     func clearOverride(for index: Int) {
         guard pathOverrides.removeValue(forKey: index) != nil else { return }
         schedulePostProcess()
+    }
+
+    // MARK: - Upscaling
+
+    /// Rebuilds input.png from the cached original — upscaled when enabled,
+    /// a straight copy otherwise — then kicks off a fresh trace.
+    private func prepareInput() {
+        guard hasImage else { return }
+        upscaleTask?.cancel()
+        // Invalidate any in-flight conversion; it traced the old input.
+        generation += 1
+        inputGeneration += 1
+        let gen = inputGeneration
+
+        guard upscale.enabled else {
+            isUpscaling = false
+            Task { [upscaler] in await upscaler.cancel() }
+            do {
+                try? FileManager.default.removeItem(at: inputPNGURL)
+                try FileManager.default.copyItem(at: originalPNGURL, to: inputPNGURL)
+            } catch {
+                errorMessage = error.localizedDescription
+                return
+            }
+            sourcePixelSize = originalPixelSize
+            imageVersion += 1
+            scheduleConversion(immediately: true)
+            return
+        }
+
+        isUpscaling = true
+        upscaleProgress = 0
+        let settings = upscale
+        let source = originalPNGURL
+        // Upscayl writes to a side file so an in-flight vtracer never reads a
+        // half-written input.png; the swap happens after it finishes.
+        let staging = workDirectory.appendingPathComponent("upscaled.png")
+        let destination = inputPNGURL
+        upscaleTask = Task { [weak self, upscaler] in
+            do {
+                try await upscaler.upscale(input: source, output: staging,
+                                           settings: settings) { [weak self] fraction in
+                    guard let self, gen == self.inputGeneration else { return }
+                    self.upscaleProgress = fraction
+                }
+                guard let self, gen == self.inputGeneration else { return }
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: staging, to: destination)
+                if let rep = NSBitmapImageRep(data: try Data(contentsOf: destination)) {
+                    self.sourcePixelSize = CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
+                }
+                self.isUpscaling = false
+                self.imageVersion += 1
+                self.scheduleConversion(immediately: true)
+            } catch is CancellationError {
+                // Superseded by a newer upscale; the newer one owns the UI state.
+            } catch {
+                guard let self, gen == self.inputGeneration else { return }
+                self.isUpscaling = false
+                self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     // MARK: - Conversion

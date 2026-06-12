@@ -7,12 +7,12 @@
         "key": "Click a shape in the preview to see its control points and simplify it individually. Delete removes it. Z = zoom tool (⌥ zooms out), V = cursor, hold Space to pan.",
         "location": {
           "startingColumn": 26,
-          "startingLine": 84
+          "startingLine": 102
         }
       },
       {
         "comment": "",
-        "key": "Clustering",
+        "key": "Upscayl (Digital Art)",
         "location": {
           "startingColumn": 24,
           "startingLine": 16
@@ -20,10 +20,34 @@
       },
       {
         "comment": "",
+        "key": "Scale",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 19
+        }
+      },
+      {
+        "comment": "",
+        "key": "Double Upscayl",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 25
+        }
+      },
+      {
+        "comment": "",
+        "key": "Clustering",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 34
+        }
+      },
+      {
+        "comment": "",
         "key": "Hierarchy",
         "location": {
           "startingColumn": 28,
-          "startingLine": 23
+          "startingLine": 41
         }
       },
       {
@@ -31,7 +55,31 @@
         "key": "Curve Fitting",
         "location": {
           "startingColumn": 24,
-          "startingLine": 44
+          "startingLine": 62
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld× total — %lld × %lld → %lld × %lld px",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 130
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld× total",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 134
+        }
+      },
+      {
+        "comment": "",
+        "key": "Upscayling… %lld%%",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 123
         }
       },
       {
@@ -39,7 +87,7 @@
         "key": "Reset to Global",
         "location": {
           "startingColumn": 24,
-          "startingLine": 140
+          "startingLine": 179
         }
       },
       {
@@ -47,7 +95,7 @@
         "key": "Shape %lld",
         "location": {
           "startingColumn": 22,
-          "startingLine": 104
+          "startingLine": 143
         }
       },
       {
@@ -55,7 +103,7 @@
         "key": "custom",
         "location": {
           "startingColumn": 26,
-          "startingLine": 107
+          "startingLine": 146
         }
       },
       {
@@ -63,7 +111,7 @@
         "key": "Delete",
         "location": {
           "startingColumn": 24,
-          "startingLine": 114
+          "startingLine": 153
         }
       },
       {
@@ -71,7 +119,7 @@
         "key": "Deselect",
         "location": {
           "startingColumn": 24,
-          "startingLine": 118
+          "startingLine": 157
         }
       },
       {
@@ -79,7 +127,7 @@
         "key": "(%@)",
         "location": {
           "startingColumn": 22,
-          "startingLine": 187
+          "startingLine": 226
         }
       },
       {
@@ -87,7 +135,7 @@
         "key": "Off",
         "location": {
           "startingColumn": 26,
-          "startingLine": 192
+          "startingLine": 231
         }
       }
     ]

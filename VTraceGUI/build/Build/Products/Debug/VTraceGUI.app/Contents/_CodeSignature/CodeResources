@@ -4,9 +4,29 @@
 <dict>
 	<key>files</key>
 	<dict>
+		<key>Resources/AppIcon.icns</key>
+		<data>
+		ZKFh8HVR+XhhNTDBXrizeApsPq4=
+		</data>
+		<key>Resources/Assets.car</key>
+		<data>
+		PlV5jKi+EXfKFctdx+JTnCf8wiw=
+		</data>
+		<key>Resources/digital-art-4x.bin</key>
+		<data>
+		hYgVBSGpRoCy8RbFWcQmyNpB28s=
+		</data>
+		<key>Resources/digital-art-4x.param</key>
+		<data>
+		kqt79jnKBsNFPeQ79/e64oHE7yU=
+		</data>
+		<key>Resources/upscayl-bin</key>
+		<data>
+		LeQZBfSw/4Ezwgh3QYRMBHt7/NI=
+		</data>
 		<key>Resources/vtracer</key>
 		<data>
-		03zvDAGsk0WYnUkt1Gp7ch6caPo=
+		4bA6pa7/LEbDpnFWXaz2UHFNo3o=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -15,25 +35,60 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			qBat/Ztmpc2GuQavTxzL6EH+qK0=
+			J5CMcKAsHfDhl/5O/gG9qTciPl0=
 			</data>
 			<key>requirement</key>
-			<string>cdhash H"a816adfd9b66a5cd86b906af4f1ccbe841fea8ad"</string>
+			<string>identifier "VTraceGUI.debug" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: Zach Gage (RGBPC674D6)" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */</string>
 		</dict>
 		<key>MacOS/__preview.dylib</key>
 		<dict>
 			<key>cdhash</key>
 			<data>
-			t9A3I8ySrmo7KHX8JfLfUsY0Uxg=
+			PA9GErSIl71IpfaujPIZPyLHyfQ=
 			</data>
 			<key>requirement</key>
-			<string>cdhash H"b7d03723cc92ae6a3b2875fc25f2df52c6345318"</string>
+			<string>identifier "__preview" and anchor apple generic and certificate leaf[subject.CN] = "Apple Development: Zach Gage (RGBPC674D6)" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */</string>
+		</dict>
+		<key>Resources/AppIcon.icns</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			YwhwKese+u9BsgJZVVnUidSp7lD9v6bDUCAZDG9JPFE=
+			</data>
+		</dict>
+		<key>Resources/Assets.car</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			JVReeQXh88YZCs16YxBHYlJaIGgyffbNdJtcd67OI84=
+			</data>
+		</dict>
+		<key>Resources/digital-art-4x.bin</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			/gHCac/RDN744BirZuvnUM95x69NH5wWxzfhKVIpusw=
+			</data>
+		</dict>
+		<key>Resources/digital-art-4x.param</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			K4+24K5NLYVwTKCMEZovXqQK3U8uzVEut/TNRLYSftQ=
+			</data>
+		</dict>
+		<key>Resources/upscayl-bin</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ehvDO9+VFQDZ1Hr8DyvzTcNVOldxQU18yzZulNEsH1c=
+			</data>
 		</dict>
 		<key>Resources/vtracer</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			d+SVu+ISRIJAOH+6O22LxiuiDs+288IpZ+UWAPHMbmY=
+			1DHI+xXRTFUpGL3bGh0k1POphd2gC48wnxNqiXtLHDQ=
 			</data>
 		</dict>
 	</dict>

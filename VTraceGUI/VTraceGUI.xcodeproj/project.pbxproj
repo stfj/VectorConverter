@@ -55,7 +55,7 @@
 				536F8B462FDC423F00AC03F5 /* Sources */,
 				536F8B472FDC423F00AC03F5 /* Frameworks */,
 				536F8B482FDC423F00AC03F5 /* Resources */,
-				536F8B582FDC424000AC03F5 /* Sign vtracer (Hardened Runtime) */,
+				536F8B582FDC424000AC03F5 /* Sign bundled binaries (Hardened Runtime) */,
 			);
 			buildRules = (
 			);
@@ -116,7 +116,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		536F8B582FDC424000AC03F5 /* Sign vtracer (Hardened Runtime) */ = {
+		536F8B582FDC424000AC03F5 /* Sign bundled binaries (Hardened Runtime) */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -126,14 +126,14 @@
 			);
 			inputPaths = (
 			);
-			name = "Sign vtracer (Hardened Runtime)";
+			name = "Sign bundled binaries (Hardened Runtime)";
 			outputFileListPaths = (
 			);
 			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nBIN=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/vtracer\"\n[ -f \"$BIN\" ] || exit 0\nif [ \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" = \"-\" ]; then\n  codesign --force --options runtime --sign - \"$BIN\"\nelse\n  codesign --force --options runtime --timestamp --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BIN\"\nfi\n";
+			shellScript = "set -e\nfor NAME in vtracer upscayl-bin; do\n  BIN=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/${NAME}\"\n  [ -f \"$BIN\" ] || continue\n  if [ \"${EXPANDED_CODE_SIGN_IDENTITY:--}\" = \"-\" ]; then\n    codesign --force --options runtime --sign - \"$BIN\"\n  else\n    codesign --force --options runtime --timestamp --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" \"$BIN\"\n  fi\ndone\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

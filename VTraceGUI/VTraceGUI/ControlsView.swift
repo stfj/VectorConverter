@@ -11,6 +11,24 @@ struct ControlsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                sectionHeader("Upscale")
+
+                Toggle("Upscayl (Digital Art)", isOn: $model.upscale.enabled)
+
+                if model.upscale.enabled {
+                    Picker("Scale", selection: $model.upscale.scale) {
+                        ForEach(UpscaleScale.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    Toggle("Double Upscayl", isOn: $model.upscale.doublePass)
+
+                    upscaleCaption
+                }
+
+                Divider()
+
                 sectionHeader("Clustering")
 
                 Picker("Clustering", selection: $model.settings.clustering) {
@@ -96,6 +114,27 @@ struct ControlsView: View {
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
             .font(.headline)
+    }
+
+    @ViewBuilder
+    private var upscaleCaption: some View {
+        if model.isUpscaling {
+            ProgressView(value: model.upscaleProgress) {
+                Text("Upscayling… \(Int(model.upscaleProgress * 100))%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .controlSize(.small)
+        } else if let original = model.originalPixelSize {
+            let factor = model.upscale.totalFactor
+            Text("\(factor)× total — \(Int(original.width)) × \(Int(original.height)) → \(Int(original.width) * factor) × \(Int(original.height) * factor) px")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Text("\(model.upscale.totalFactor)× total")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func selectedShapePanel(_ index: Int) -> some View {
