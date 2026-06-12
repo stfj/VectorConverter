@@ -1,0 +1,6 @@
+VectorConverter — Project Summary
+===================================
+
+WHAT IT IS
+----------
+Utility to convert, normalize, and export vector graphics (primarily SVG) into other formats for game/print workflows.

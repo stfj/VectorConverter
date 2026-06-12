@@ -1,0 +1,96 @@
+{
+  "source": "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/ControlsView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Click a shape in the preview to see its control points and simplify it individually. Delete removes it. Z = zoom tool (⌥ zooms out), V = cursor, hold Space to pan.",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 84
+        }
+      },
+      {
+        "comment": "",
+        "key": "Clustering",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 16
+        }
+      },
+      {
+        "comment": "",
+        "key": "Hierarchy",
+        "location": {
+          "startingColumn": 28,
+          "startingLine": 23
+        }
+      },
+      {
+        "comment": "",
+        "key": "Curve Fitting",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 44
+        }
+      },
+      {
+        "comment": "",
+        "key": "Reset to Global",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 140
+        }
+      },
+      {
+        "comment": "",
+        "key": "Shape %lld",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 104
+        }
+      },
+      {
+        "comment": "",
+        "key": "custom",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 107
+        }
+      },
+      {
+        "comment": "",
+        "key": "Delete",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 114
+        }
+      },
+      {
+        "comment": "",
+        "key": "Deselect",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 118
+        }
+      },
+      {
+        "comment": "",
+        "key": "(%@)",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 187
+        }
+      },
+      {
+        "comment": "",
+        "key": "Off",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 192
+        }
+      }
+    ]
+  },
+  "version": 1
+}

@@ -1,0 +1,64 @@
+{
+  "buildCommand" : {
+    "command" : "build",
+    "skipDependencies" : false,
+    "style" : "buildOnly"
+  },
+  "configuredTargets" : [
+    {
+      "guid" : "f02b04da1a4db66f1765a80a8d9c5a4516ca182c720c75bb97ce48f56b505fef"
+    }
+  ],
+  "containerPath" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI.xcodeproj",
+  "continueBuildingAfterErrors" : false,
+  "dependencyScope" : "workspace",
+  "enableIndexBuildArena" : false,
+  "hideShellScriptEnvironment" : false,
+  "parameters" : {
+    "action" : "build",
+    "activeArchitecture" : "arm64",
+    "activeRunDestination" : {
+      "disableOnlyActiveArch" : false,
+      "platform" : "macosx",
+      "sdk" : "macosx26.2",
+      "sdkVariant" : "macos",
+      "supportedArchitectures" : [
+        "arm64e",
+        "arm64",
+        "x86_64"
+      ],
+      "targetArchitecture" : "arm64"
+    },
+    "arenaInfo" : {
+      "buildIntermediatesPath" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex",
+      "buildProductsPath" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Products",
+      "derivedDataPath" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build",
+      "indexDataStoreFolderPath" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Index.noindex/DataStore",
+      "indexEnableDataStore" : true,
+      "indexPCHPath" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Index.noindex/PrecompiledHeaders",
+      "pchPath" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/PrecompiledHeaders"
+    },
+    "configurationName" : "Debug",
+    "overrides" : {
+      "commandLine" : {
+        "table" : {
+          "CODE_SIGN_IDENTITY" : "-"
+        }
+      },
+      "synthesized" : {
+        "table" : {
+          "ACTION" : "build",
+          "ENABLE_PREVIEWS" : "NO",
+          "ENABLE_XOJIT_PREVIEWS" : "YES",
+          "ONLY_ACTIVE_ARCH" : "YES"
+        }
+      }
+    }
+  },
+  "schemeCommand" : "launch",
+  "showNonLoggedProgress" : true,
+  "useDryRun" : false,
+  "useImplicitDependencies" : true,
+  "useLegacyBuildLocations" : false,
+  "useParallelTargets" : true
+}

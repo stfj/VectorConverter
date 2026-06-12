@@ -1,0 +1,120 @@
+{
+  "source": "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/ContentView.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Open an image (⌘O)",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 26
+        }
+      },
+      {
+        "comment": "",
+        "key": "Open…",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 24
+        }
+      },
+      {
+        "comment": "",
+        "key": "Export the traced SVG (⌘S)",
+        "location": {
+          "startingColumn": 23,
+          "startingLine": 35
+        }
+      },
+      {
+        "comment": "",
+        "key": "Export SVG…",
+        "location": {
+          "startingColumn": 27,
+          "startingLine": 32
+        }
+      },
+      {
+        "comment": "",
+        "key": "Drag an image here",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 78
+        }
+      },
+      {
+        "comment": "",
+        "key": "paste with ⌘V, or",
+        "location": {
+          "startingColumn": 18,
+          "startingLine": 80
+        }
+      },
+      {
+        "comment": "",
+        "key": "Choose Image…",
+        "location": {
+          "startingColumn": 20,
+          "startingLine": 82
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld × %lld px",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 98
+        }
+      },
+      {
+        "comment": "",
+        "key": "%lld paths",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 101
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@ → %@ points",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 105
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@ points",
+        "location": {
+          "startingColumn": 26,
+          "startingLine": 107
+        }
+      },
+      {
+        "comment": "",
+        "key": "%@ nodes",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 111
+        }
+      },
+      {
+        "comment": "",
+        "key": "shape %lld selected",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 117
+        }
+      },
+      {
+        "comment": "",
+        "key": "zoom tool — click to zoom, ⌥-click out, V for cursor",
+        "location": {
+          "startingColumn": 22,
+          "startingLine": 121
+        }
+      }
+    ]
+  },
+  "version": 1
+}

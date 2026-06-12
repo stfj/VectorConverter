@@ -1,0 +1,99 @@
+{
+  "" : {
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUI-primary.dia",
+    "emit-module-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUI-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUI-primary-emit-module.dia",
+    "pch" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUI-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUI-primary.swiftdeps"
+  },
+  "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/AppModel.swift" : {
+    "const-values" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/AppModel.swiftconstvalues",
+    "dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/AppModel.d",
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/AppModel.dia",
+    "index-unit-output-path" : "/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/AppModel.o",
+    "llvm-bc" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/AppModel.bc",
+    "object" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/AppModel.o",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/AppModel.swiftdeps",
+    "swiftmodule" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/AppModel~partial.swiftmodule"
+  },
+  "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/ContentView.swift" : {
+    "const-values" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ContentView.swiftconstvalues",
+    "dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ContentView.d",
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ContentView.dia",
+    "index-unit-output-path" : "/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ContentView.o",
+    "llvm-bc" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ContentView.bc",
+    "object" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ContentView.o",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ContentView.swiftdeps",
+    "swiftmodule" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ContentView~partial.swiftmodule"
+  },
+  "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/ControlsView.swift" : {
+    "const-values" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ControlsView.swiftconstvalues",
+    "dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ControlsView.d",
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ControlsView.dia",
+    "index-unit-output-path" : "/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ControlsView.o",
+    "llvm-bc" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ControlsView.bc",
+    "object" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ControlsView.o",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ControlsView.swiftdeps",
+    "swiftmodule" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/ControlsView~partial.swiftmodule"
+  },
+  "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/SVGPreviewView.swift" : {
+    "const-values" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGPreviewView.swiftconstvalues",
+    "dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGPreviewView.d",
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGPreviewView.dia",
+    "index-unit-output-path" : "/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGPreviewView.o",
+    "llvm-bc" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGPreviewView.bc",
+    "object" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGPreviewView.o",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGPreviewView.swiftdeps",
+    "swiftmodule" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGPreviewView~partial.swiftmodule"
+  },
+  "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/SVGSimplifier.swift" : {
+    "const-values" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGSimplifier.swiftconstvalues",
+    "dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGSimplifier.d",
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGSimplifier.dia",
+    "index-unit-output-path" : "/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGSimplifier.o",
+    "llvm-bc" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGSimplifier.bc",
+    "object" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGSimplifier.o",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGSimplifier.swiftdeps",
+    "swiftmodule" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/SVGSimplifier~partial.swiftmodule"
+  },
+  "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/VTraceGUIApp.swift" : {
+    "const-values" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUIApp.swiftconstvalues",
+    "dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUIApp.d",
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUIApp.dia",
+    "index-unit-output-path" : "/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUIApp.o",
+    "llvm-bc" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUIApp.bc",
+    "object" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUIApp.o",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUIApp.swiftdeps",
+    "swiftmodule" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTraceGUIApp~partial.swiftmodule"
+  },
+  "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/VTracerRunner.swift" : {
+    "const-values" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerRunner.swiftconstvalues",
+    "dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerRunner.d",
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerRunner.dia",
+    "index-unit-output-path" : "/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerRunner.o",
+    "llvm-bc" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerRunner.bc",
+    "object" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerRunner.o",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerRunner.swiftdeps",
+    "swiftmodule" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerRunner~partial.swiftmodule"
+  },
+  "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/VTracerSettings.swift" : {
+    "const-values" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerSettings.swiftconstvalues",
+    "dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerSettings.d",
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerSettings.dia",
+    "index-unit-output-path" : "/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerSettings.o",
+    "llvm-bc" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerSettings.bc",
+    "object" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerSettings.o",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerSettings.swiftdeps",
+    "swiftmodule" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/VTracerSettings~partial.swiftmodule"
+  },
+  "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/DerivedSources/GeneratedAssetSymbols.swift" : {
+    "const-values" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftconstvalues",
+    "dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/GeneratedAssetSymbols.d",
+    "diagnostics" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/GeneratedAssetSymbols.dia",
+    "index-unit-output-path" : "/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "llvm-bc" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/GeneratedAssetSymbols.bc",
+    "object" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/GeneratedAssetSymbols.o",
+    "swift-dependencies" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/GeneratedAssetSymbols.swiftdeps",
+    "swiftmodule" : "/Users/zachgage/Projects/VectorConverter/VTraceGUI/build/Build/Intermediates.noindex/VTraceGUI.build/Debug/VTraceGUI.build/Objects-normal/arm64/GeneratedAssetSymbols~partial.swiftmodule"
+  }
+}

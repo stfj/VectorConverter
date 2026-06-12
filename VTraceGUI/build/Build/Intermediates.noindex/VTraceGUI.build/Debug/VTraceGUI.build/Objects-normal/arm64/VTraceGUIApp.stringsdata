@@ -1,0 +1,48 @@
+{
+  "source": "/Users/zachgage/Projects/VectorConverter/VTraceGUI/VTraceGUI/VTraceGUIApp.swift",
+  "tables": {
+    "Localizable": [
+      {
+        "comment": "",
+        "key": "Open…",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 21
+        }
+      },
+      {
+        "comment": "",
+        "key": "Export SVG…",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 23
+        }
+      },
+      {
+        "comment": "",
+        "key": "Undo Delete Shape",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 28
+        }
+      },
+      {
+        "comment": "",
+        "key": "Copy SVG",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 33
+        }
+      },
+      {
+        "comment": "",
+        "key": "Paste Image",
+        "location": {
+          "startingColumn": 24,
+          "startingLine": 36
+        }
+      }
+    ]
+  },
+  "version": 1
+}
