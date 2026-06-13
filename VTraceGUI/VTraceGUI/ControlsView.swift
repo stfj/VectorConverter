@@ -91,6 +91,12 @@ struct ControlsView: View {
                           value: $model.simplification.maxNodes, range: 0...32,
                           offBelow: 3)
 
+                if model.colorCount > 1 {
+                    SliderRow(label: "Colors", hint: "Smash similar",
+                              value: colorsBinding,
+                              range: 1...Double(model.colorCount))
+                }
+
                 if model.simplification.isActive {
                     SliderRow(label: "Corner Angle", hint: "Smoother",
                               value: $model.simplification.cornerAngle, range: 15...180)
@@ -217,6 +223,22 @@ struct ControlsView: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.accentColor.opacity(0.4))
         }
+    }
+
+    /// Slider position for the color budget: the right end (= every color in
+    /// the trace) stores 0, meaning "no merging".
+    private var colorsBinding: Binding<Double> {
+        Binding(
+            get: {
+                let total = Double(model.colorCount)
+                let budget = model.simplification.maxColors
+                return budget == 0 ? total : min(budget, total)
+            },
+            set: { newValue in
+                model.simplification.maxColors =
+                    newValue >= Double(model.colorCount) ? 0 : newValue.rounded()
+            }
+        )
     }
 
     private func effective(_ index: Int) -> SimplificationSettings {

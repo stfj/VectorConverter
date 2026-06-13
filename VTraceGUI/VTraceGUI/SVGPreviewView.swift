@@ -268,6 +268,8 @@ struct SVGPreviewView: NSViewRepresentable {
             stroke: #ff0;
             stroke-width: 1.5;
             vector-effect: non-scaling-stroke;
+            fill: #ff0;
+            fill-opacity: 0.5;
         }
         #wandhud {
             position: fixed;

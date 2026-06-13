@@ -24,9 +24,14 @@ nonisolated struct SimplificationSettings: Equatable, Sendable {
     /// budget binds, fitting error is ignored and the weakest corners are
     /// dropped so the shape fits the budget.
     var maxNodes: Double = 0
+    /// Cap on distinct fill colors: similar colors merge (weighted-average)
+    /// until at most this many remain. 0 means no merging. Global only —
+    /// ignored in per-shape overrides.
+    var maxColors: Double = 0
 
     var isActive: Bool { tolerance > 0 || smoothing > 0 || nodeBudget != nil }
     var nodeBudget: Int? { maxNodes >= 3 ? Int(maxNodes) : nil }
+    var colorBudget: Int? { maxColors >= 1 ? Int(maxColors) : nil }
     /// Error used by the fitter when only smoothing/budget are active.
     var baseTolerance: Double { tolerance > 0 ? tolerance : 0.75 }
 }
@@ -39,6 +44,10 @@ nonisolated enum SVGSimplifier {
         var inputPointCount: Int
         var outputPointCount: Int
         var outputNodeCount: Int
+        /// Distinct fill colors in the raw trace (before any merging).
+        var inputColorCount: Int
+        /// Distinct fill colors after merging.
+        var outputColorCount: Int
     }
 
     /// `overrides` maps a path's index (document order) to settings that
@@ -48,6 +57,7 @@ nonisolated enum SVGSimplifier {
     static func process(_ svg: String, settings: SimplificationSettings,
                         overrides: [Int: SimplificationSettings] = [:],
                         deleted: Set<Int> = []) -> Result {
+        let (svg, inputColors, outputColors) = mergeFills(in: svg, budget: settings.colorBudget)
         let ns = svg as NSString
         let regex = try! NSRegularExpression(pattern: "d=\"([^\"]*)\"")
         let matches = regex.matches(in: svg, range: NSRange(location: 0, length: ns.length))
@@ -96,7 +106,86 @@ nonisolated enum SVGSimplifier {
         output += ns.substring(from: cursor)
         return Result(svg: output, pathCount: pathIndex,
                       inputPointCount: inputPoints, outputPointCount: outputPoints,
-                      outputNodeCount: outputNodes)
+                      outputNodeCount: outputNodes,
+                      inputColorCount: inputColors, outputColorCount: outputColors)
+    }
+
+    // MARK: - Color merging
+
+    /// Rewrites fill colors so at most `budget` distinct colors remain,
+    /// agglomeratively merging the closest pair (weighted by how many paths
+    /// use each color) until the budget is met.
+    private static func mergeFills(in svg: String, budget: Int?) -> (String, Int, Int) {
+        let ns = svg as NSString
+        let regex = try! NSRegularExpression(pattern: "fill=\"(#[0-9A-Fa-f]{6})\"")
+        let matches = regex.matches(in: svg, range: NSRange(location: 0, length: ns.length))
+
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for match in matches {
+            let hex = ns.substring(with: match.range(at: 1)).uppercased()
+            if counts[hex] == nil { order.append(hex) }
+            counts[hex, default: 0] += 1
+        }
+        let total = order.count
+        guard let budget, budget < total else { return (svg, total, total) }
+
+        struct Cluster {
+            var r: Double, g: Double, b: Double
+            var weight: Double
+            var members: [String]
+        }
+        var clusters: [Cluster] = order.map { hex in
+            let v = UInt32(hex.dropFirst(), radix: 16) ?? 0
+            return Cluster(r: Double((v >> 16) & 255), g: Double((v >> 8) & 255),
+                           b: Double(v & 255), weight: Double(counts[hex] ?? 1),
+                           members: [hex])
+        }
+        while clusters.count > budget {
+            var bestI = 0, bestJ = 1
+            var bestDist = Double.infinity
+            for i in 0..<(clusters.count - 1) {
+                for j in (i + 1)..<clusters.count {
+                    let dr = clusters[i].r - clusters[j].r
+                    let dg = clusters[i].g - clusters[j].g
+                    let db = clusters[i].b - clusters[j].b
+                    let dist = dr * dr + dg * dg + db * db
+                    if dist < bestDist {
+                        bestDist = dist
+                        bestI = i
+                        bestJ = j
+                    }
+                }
+            }
+            let a = clusters[bestI], b = clusters[bestJ]
+            let w = a.weight + b.weight
+            clusters[bestI] = Cluster(r: (a.r * a.weight + b.r * b.weight) / w,
+                                      g: (a.g * a.weight + b.g * b.weight) / w,
+                                      b: (a.b * a.weight + b.b * b.weight) / w,
+                                      weight: w, members: a.members + b.members)
+            clusters.remove(at: bestJ)
+        }
+
+        var mapping: [String: String] = [:]
+        for cluster in clusters {
+            let hex = String(format: "#%02X%02X%02X",
+                             Int(cluster.r.rounded()), Int(cluster.g.rounded()),
+                             Int(cluster.b.rounded()))
+            for member in cluster.members { mapping[member] = hex }
+        }
+
+        var output = ""
+        output.reserveCapacity(svg.count)
+        var cursor = 0
+        for match in matches {
+            let full = match.range
+            output += ns.substring(with: NSRange(location: cursor, length: full.location - cursor))
+            cursor = full.location + full.length
+            let hex = ns.substring(with: match.range(at: 1)).uppercased()
+            output += "fill=\"\(mapping[hex] ?? hex)\""
+        }
+        output += ns.substring(from: cursor)
+        return (output, total, clusters.count)
     }
 
     // MARK: - Path model

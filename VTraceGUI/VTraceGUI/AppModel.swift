@@ -75,6 +75,9 @@ final class AppModel {
     private(set) var rawPointCount: Int?
     private(set) var pointCount: Int?
     private(set) var nodeCount: Int?
+    /// Distinct fill colors in the raw trace; the Colors slider's upper bound.
+    private(set) var colorCount = 0
+    private(set) var outputColorCount = 0
     private(set) var lastConversionTime: TimeInterval?
     var errorMessage: String?
 
@@ -497,6 +500,8 @@ final class AppModel {
         rawPointCount = result.inputPointCount
         pointCount = result.outputPointCount
         nodeCount = result.outputNodeCount
+        colorCount = result.inputColorCount
+        outputColorCount = result.outputColorCount
         if let conversionStart {
             lastConversionTime = Date().timeIntervalSince(conversionStart)
         }

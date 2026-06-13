@@ -121,6 +121,13 @@ struct ContentView: View {
             if let nodes = model.nodeCount, nodes > 0 {
                 Text("\(nodes.formatted()) nodes")
             }
+            if model.colorCount > 0 {
+                if model.outputColorCount != model.colorCount {
+                    Text("\(model.colorCount) → \(model.outputColorCount) colors")
+                } else {
+                    Text("\(model.colorCount) colors")
+                }
+            }
             if let seconds = model.lastConversionTime {
                 Text(String(format: "%.2fs", seconds))
             }
