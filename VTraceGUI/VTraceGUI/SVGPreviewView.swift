@@ -55,6 +55,7 @@ struct SVGPreviewView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(context.coordinator, name: "pathClick")
+        configuration.userContentController.add(context.coordinator, name: "lassoSelect")
         let webView = ImageDropWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         let model = model
@@ -69,6 +70,7 @@ struct SVGPreviewView: NSViewRepresentable {
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "pathClick")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "lassoSelect")
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
@@ -98,11 +100,29 @@ struct SVGPreviewView: NSViewRepresentable {
         }
         if coordinator.sentTool != model.previewTool {
             coordinator.sentTool = model.previewTool
-            coordinator.run(webView, "setTool('\(model.previewTool == .zoom ? "zoom" : "cursor")')")
+            let name: String
+            switch model.previewTool {
+            case .cursor: name = "cursor"
+            case .zoom: name = "zoom"
+            case .wand: name = "wand"
+            }
+            coordinator.run(webView, "setTool('\(name)')")
         }
         if coordinator.sentSelection != model.selectedPathIndex {
             coordinator.sentSelection = model.selectedPathIndex
             coordinator.run(webView, "setSelected(\(model.selectedPathIndex ?? -1))")
+        }
+        if coordinator.sentLasso != model.lassoSelection {
+            coordinator.sentLasso = model.lassoSelection
+            let list = model.lassoSelection.sorted().map(String.init).joined(separator: ",")
+            coordinator.run(webView, "setLassoSelection([\(list)])")
+        }
+        if coordinator.sentDeleted != model.deletedPaths {
+            coordinator.sentDeleted = model.deletedPaths
+            // Hide deleted shapes immediately; the re-simplified SVG (which
+            // can take a while on big traces) replaces them properly later.
+            let list = model.deletedPaths.sorted().map(String.init).joined(separator: ",")
+            coordinator.run(webView, "setDeletedPaths([\(list)])")
         }
     }
 
@@ -115,6 +135,8 @@ struct SVGPreviewView: NSViewRepresentable {
         var sentAltDown = false
         var sentTool = PreviewTool.cursor
         var sentSelection: Int?
+        var sentLasso: Set<Int> = []
+        var sentDeleted: Set<Int> = []
         private var pageLoaded = false
         private var pendingScripts: [String] = []
 
@@ -138,11 +160,23 @@ struct SVGPreviewView: NSViewRepresentable {
 
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
-            guard message.name == "pathClick", let index = message.body as? Int else { return }
             let model = model
-            Task { @MainActor in
-                let newValue = index >= 0 ? index : nil
-                model.selectedPathIndex = newValue
+            if message.name == "pathClick", let index = message.body as? Int {
+                // The page already cleared its lasso; mirror that so the
+                // model sync doesn't echo a stale state back.
+                sentLasso = []
+                Task { @MainActor in
+                    model.selectPath(index >= 0 ? index : nil)
+                }
+            } else if message.name == "lassoSelect", let indices = message.body as? [Int] {
+                // Pre-set the sent state so updateNSView doesn't echo this
+                // selection straight back and clobber the page's lasso.
+                let set = Set(indices)
+                sentLasso = set
+                sentSelection = nil
+                Task { @MainActor in
+                    model.setLassoSelection(set)
+                }
             }
         }
     }
@@ -188,13 +222,31 @@ struct SVGPreviewView: NSViewRepresentable {
             -webkit-user-drag: none;
             user-select: none;
         }
-        body.tool-zoom #overlay, body.tool-hand #overlay {
+        body.tool-zoom #overlay, body.tool-hand #overlay, body.tool-wand #overlay {
             pointer-events: none;
         }
         body.tool-zoom #stage { cursor: zoom-in; }
         body.tool-zoom.alt #stage { cursor: zoom-out; }
         body.tool-hand #stage { cursor: grab; }
         body.tool-hand.panning #stage { cursor: grabbing; }
+        body.tool-wand #stage { cursor: crosshair; }
+        #lasso {
+            position: fixed;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        #lasso path {
+            fill: rgba(10, 132, 255, 0.08);
+            stroke: #0a84ff;
+            stroke-width: 1.5;
+            stroke-dasharray: 6 4;
+            animation: ants 0.4s linear infinite;
+        }
+        @keyframes ants {
+            to { stroke-dashoffset: -10; }
+        }
         #overlay {
             position: absolute;
             inset: 0;
@@ -212,10 +264,44 @@ struct SVGPreviewView: NSViewRepresentable {
             stroke-width: 1.5;
             vector-effect: non-scaling-stroke;
         }
+        #overlay svg > path.wandsel {
+            stroke: #ff0;
+            stroke-width: 1.5;
+            vector-effect: non-scaling-stroke;
+        }
+        #wandhud {
+            position: fixed;
+            top: 14px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(20, 20, 22, 0.85);
+            color: #fff;
+            font: 12px -apple-system, sans-serif;
+            padding: 8px 14px;
+            border-radius: 8px;
+            opacity: 0;
+            transition: opacity 0.15s;
+            pointer-events: none;
+            text-align: center;
+        }
+        #wandhudtrack {
+            margin-top: 6px;
+            width: 200px;
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.25);
+        }
+        #wandhudfill {
+            height: 100%;
+            border-radius: 2px;
+            background: #0a84ff;
+        }
     </style>
     </head>
     <body>
     <div id="stage"><div id="wrap"><img id="raster"><div id="overlay"></div></div></div>
+    <svg id="lasso" xmlns="http://www.w3.org/2000/svg"></svg>
+    <div id="wandhud"><div id="wandhudlabel"></div><div id="wandhudtrack"><div id="wandhudfill"></div></div></div>
     <script>
         const wrap = document.getElementById('wrap');
         const raster = document.getElementById('raster');
@@ -226,6 +312,8 @@ struct SVGPreviewView: NSViewRepresentable {
             raster.style.opacity = 1;
             raster.src = src;
             wrap.style.display = 'inline-block';
+            clearLasso();
+            selectedIndices = [];
             resetView();
         }
 
@@ -253,7 +341,7 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         // ---- Tools, zoom & pan ----
-        let tool = 'cursor';        // 'cursor' | 'zoom'
+        let tool = 'cursor';        // 'cursor' | 'zoom' | 'wand'
         let spaceDown = false;      // hand tool while held; also hides points
         let altDown = false;
         let scale = 1, tx = 0, ty = 0;
@@ -266,6 +354,7 @@ struct SVGPreviewView: NSViewRepresentable {
             const b = document.body;
             b.classList.toggle('tool-hand', spaceDown);
             b.classList.toggle('tool-zoom', !spaceDown && tool === 'zoom');
+            b.classList.toggle('tool-wand', !spaceDown && tool === 'wand');
             b.classList.toggle('alt', altDown);
         }
 
@@ -293,7 +382,16 @@ struct SVGPreviewView: NSViewRepresentable {
 
         let panning = false, panStartX = 0, panStartY = 0, panTx = 0, panTy = 0;
         document.addEventListener('mousedown', e => {
-            if (!spaceDown) return;
+            if (!spaceDown) {
+                if (tool === 'wand') {
+                    clearLasso();
+                    lassoActive = true;
+                    lassoPts = [[e.clientX, e.clientY]];
+                    drawLasso(false);
+                    e.preventDefault();
+                }
+                return;
+            }
             panning = true;
             document.body.classList.add('panning');
             panStartX = e.clientX; panStartY = e.clientY;
@@ -301,20 +399,133 @@ struct SVGPreviewView: NSViewRepresentable {
             e.preventDefault();
         });
         document.addEventListener('mousemove', e => {
+            if (lassoActive) {
+                const last = lassoPts[lassoPts.length - 1];
+                const dx = e.clientX - last[0], dy = e.clientY - last[1];
+                if (dx * dx + dy * dy > 4) {
+                    lassoPts.push([e.clientX, e.clientY]);
+                    drawLasso(false);
+                }
+                return;
+            }
             if (!panning) return;
             tx = panTx + e.clientX - panStartX;
             ty = panTy + e.clientY - panStartY;
             wrap.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
         });
         document.addEventListener('mouseup', () => {
+            if (lassoActive) {
+                finishLasso();
+                return;
+            }
             if (!panning) return;
             panning = false;
             document.body.classList.remove('panning');
             rebuildPoints();
         });
 
+        // ---- Magic wand lasso (W): select shapes in an area, scroll to
+        // tune the size cutoff so only the small ones stay selected ----
+        const lassoSvg = document.getElementById('lasso');
+        let lassoActive = false, lassoPts = [], lassoEl = null;
+        let candidates = [];   // {idx, size} from the last completed lasso
+        let threshold = 0;     // shapes with size <= threshold stay selected
+
+        function drawLasso(closed) {
+            if (!lassoEl) {
+                lassoEl = document.createElementNS(SVGNS, 'path');
+                lassoSvg.appendChild(lassoEl);
+            }
+            let d = 'M' + lassoPts[0][0] + ' ' + lassoPts[0][1];
+            for (let i = 1; i < lassoPts.length; i++) {
+                d += 'L' + lassoPts[i][0] + ' ' + lassoPts[i][1];
+            }
+            lassoEl.setAttribute('d', d + (closed ? 'Z' : ''));
+        }
+
+        function clearLasso() {
+            lassoActive = false;
+            lassoPts = [];
+            candidates = [];
+            if (lassoEl) { lassoEl.remove(); lassoEl = null; }
+            wandHud.style.opacity = 0;
+        }
+
+        function pointInPolygon(x, y, pts) {
+            let inside = false;
+            for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+                const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+                if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        function applyThreshold() {
+            selectedIndices = candidates.filter(c => c.size <= threshold).map(c => c.idx);
+            wandMode = true;
+            rebuildPoints();
+            try {
+                window.webkit.messageHandlers.lassoSelect.postMessage(selectedIndices);
+            } catch (err) {}
+        }
+
+        function finishLasso() {
+            lassoActive = false;
+            if (lassoPts.length < 3) { clearLasso(); return; }
+            drawLasso(true);
+            candidates = [];
+            shapePaths().forEach((p, idx) => {
+                if (!p.getAttribute('d')) return;       // deleted-shape placeholder
+                if (p.style.display === 'none') return; // optimistically hidden delete
+                const r = p.getBoundingClientRect();
+                if (!pointInPolygon(r.left + r.width / 2, r.top + r.height / 2, lassoPts)) return;
+                const b = p.getBBox();   // SVG units: zoom-independent size
+                candidates.push({ idx: idx, size: Math.max(b.width * b.height, 1e-6) });
+            });
+            threshold = candidates.reduce((m, c) => Math.max(m, c.size), 0);
+            applyThreshold();
+            showWandHud();
+        }
+
+        document.addEventListener('wheel', e => {
+            if (tool !== 'wand' || !candidates.length) return;
+            e.preventDefault();
+            const sizes = candidates.map(c => c.size);
+            // Smallest shape always stays selected; that's the point of the tool.
+            const lo = Math.min.apply(null, sizes), hi = Math.max.apply(null, sizes);
+            threshold = Math.min(hi, Math.max(lo, threshold * Math.exp(-e.deltaY * 0.005)));
+            applyThreshold();
+            showWandHud();
+        }, { passive: false });
+
+        // ---- Threshold HUD: shows where the size cutoff sits while scrolling ----
+        const wandHud = document.getElementById('wandhud');
+        const wandHudLabel = document.getElementById('wandhudlabel');
+        const wandHudFill = document.getElementById('wandhudfill');
+        let wandHudTimer = null;
+
+        function showWandHud() {
+            if (!candidates.length) return;
+            const sizes = candidates.map(c => c.size);
+            const lo = Math.min.apply(null, sizes), hi = Math.max.apply(null, sizes);
+            // Position on a log scale, since sizes span orders of magnitude.
+            const pct = hi > lo
+                ? (Math.log(threshold) - Math.log(lo)) / (Math.log(hi) - Math.log(lo))
+                : 1;
+            const side = Math.round(Math.sqrt(threshold));
+            wandHudLabel.textContent = selectedIndices.length + ' / ' + candidates.length
+                + ' shapes \\u2264 ' + side + ' px';
+            wandHudFill.style.width = Math.round(pct * 100) + '%';
+            wandHud.style.opacity = 1;
+            if (wandHudTimer) clearTimeout(wandHudTimer);
+            wandHudTimer = setTimeout(() => { wandHud.style.opacity = 0; }, 1200);
+        }
+
         // ---- Shape selection ----
-        let selectedIdx = -1;
+        let selectedIndices = [];
+        let wandMode = false;   // wand selections show yellow outlines, not points
 
         function shapePaths() {
             const s = overlay.querySelector('svg');
@@ -322,7 +533,27 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         function setSelected(idx) {
-            selectedIdx = idx;
+            // A deselect from the app must not clobber a live wand selection.
+            if (idx < 0 && selectedIndices.length > 1) return;
+            selectedIndices = idx >= 0 ? [idx] : [];
+            wandMode = false;
+            if (idx < 0) clearLasso();
+            rebuildPoints();
+        }
+
+        function setLassoSelection(arr) {
+            selectedIndices = arr;
+            wandMode = arr.length > 0;
+            if (!arr.length) clearLasso();
+            rebuildPoints();
+        }
+
+        /// Deleted shapes hide instantly; the re-processed SVG catches up after.
+        function setDeletedPaths(arr) {
+            const dead = new Set(arr);
+            shapePaths().forEach((p, idx) => {
+                p.style.display = dead.has(idx) ? 'none' : '';
+            });
             rebuildPoints();
         }
 
@@ -332,9 +563,12 @@ struct SVGPreviewView: NSViewRepresentable {
                 zoomAt(e.clientX, e.clientY, (altDown || e.altKey) ? 1 / 1.5 : 1.5);
                 return;
             }
+            if (tool === 'wand') return;   // clicks are lasso strokes here
             const paths = shapePaths();
             const idx = paths.indexOf(e.target);
-            selectedIdx = idx;
+            selectedIndices = idx >= 0 ? [idx] : [];
+            wandMode = false;
+            clearLasso();
             rebuildPoints();
             try {
                 window.webkit.messageHandlers.pathClick.postMessage(idx);
@@ -410,11 +644,23 @@ struct SVGPreviewView: NSViewRepresentable {
             const old = s.querySelector('#ctrlpts');
             if (old) old.remove();
             const paths = shapePaths();
-            if (spaceDown || selectedIdx < 0 || selectedIdx >= paths.length) return;
+            paths.forEach(p => p.classList.remove('wandsel'));
+            if (spaceDown || !selectedIndices.length) return;
+            if (wandMode) {
+                // Wand selections highlight whole shapes, not control points.
+                selectedIndices.forEach(idx => {
+                    const p = paths[idx];
+                    if (p && p.getAttribute('d')) p.classList.add('wandsel');
+                });
+                return;
+            }
             const out = { anchors: [], controls: [], handles: [] };
-            const p = paths[selectedIdx];
-            const tr = parseTranslate(p.getAttribute('transform'));
-            parseD(p.getAttribute('d') || '', tr[0], tr[1], out);
+            selectedIndices.forEach(idx => {
+                if (idx < 0 || idx >= paths.length) return;
+                const p = paths[idx];
+                const tr = parseTranslate(p.getAttribute('transform'));
+                parseD(p.getAttribute('d') || '', tr[0], tr[1], out);
+            });
             const g = document.createElementNS(SVGNS, 'g');
             g.setAttribute('id', 'ctrlpts');
             g.setAttribute('pointer-events', 'none');

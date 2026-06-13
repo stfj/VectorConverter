@@ -98,8 +98,10 @@ struct ControlsView: View {
 
                 if let index = model.selectedPathIndex {
                     selectedShapePanel(index)
+                } else if !model.lassoSelection.isEmpty {
+                    lassoPanel
                 } else {
-                    Text("Click a shape in the preview to see its control points and simplify it individually. Delete removes it. Z = zoom tool (⌥ zooms out), V = cursor, hold Space to pan.")
+                    Text("Click a shape in the preview to see its control points and simplify it individually. Delete removes it. Z = zoom tool (⌥ zooms out), V = cursor, W = magic wand lasso (scroll to set the size cutoff), hold Space to pan.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -181,6 +183,33 @@ struct ControlsView: View {
                 }
                 .controlSize(.small)
             }
+        }
+        .padding(10)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.accentColor.opacity(0.4))
+        }
+    }
+
+    private var lassoPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("\(model.lassoSelection.count) shapes selected")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Button("Deselect") {
+                    model.setLassoSelection([])
+                }
+                .controlSize(.small)
+            }
+            Text("Scroll to adjust the size cutoff — bigger shapes drop out as the threshold goes down.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Delete \(model.lassoSelection.count) Shapes", role: .destructive) {
+                model.deleteSelectedShape()
+            }
+            .controlSize(.small)
         }
         .padding(10)
         .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))

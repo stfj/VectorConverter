@@ -5,6 +5,7 @@ command-c or command-s to get a svg out.
 space bar to pan / hide control points
 z to zoom tool
 v to cursor tool
+w to magic wand lasso — drag around shapes, scroll to set the size cutoff so only small shapes stay selected
 
 delete / command-z to delete shapes you dont want or undo that.
 

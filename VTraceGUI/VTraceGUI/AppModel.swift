@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 enum PreviewTool {
     case cursor
     case zoom
+    case wand
 }
 
 @MainActor
@@ -45,6 +46,10 @@ final class AppModel {
     /// Index (document order) of the shape selected by clicking in the preview.
     var selectedPathIndex: Int?
 
+    /// Shapes selected by the magic wand lasso (W). Mutually exclusive with
+    /// the single click-selection above.
+    private(set) var lassoSelection: Set<Int> = []
+
     /// Per-shape simplification settings, keyed by path index in the raw SVG.
     /// Cleared whenever vtracer re-runs, since shape identity changes.
     private(set) var pathOverrides: [Int: SimplificationSettings] = [:]
@@ -52,8 +57,9 @@ final class AppModel {
     /// Raw-SVG indices of shapes the user deleted. Cleared on re-trace.
     private(set) var deletedPaths: Set<Int> = []
 
-    /// Deletion order, for undo.
-    private var deletionStack: [Int] = []
+    /// Deletion order, for undo. Each entry is one delete action; a wand
+    /// delete removes (and restores) its whole group at once.
+    private var deletionStack: [[Int]] = []
 
     /// Bumped each time a new source image is loaded; the preview keys off this.
     private(set) var imageVersion = 0
@@ -130,6 +136,10 @@ final class AppModel {
                 previewTool = .cursor
                 return nil
             }
+            if key == "w" {
+                previewTool = .wand
+                return nil
+            }
         }
 
         // ⌘C / ⌘V: handle here because the preview WKWebView becomes first
@@ -157,7 +167,8 @@ final class AppModel {
             }
             return nil
         case 51, 117: // backspace, forward delete
-            guard event.type == .keyDown, selectedPathIndex != nil else { return event }
+            guard event.type == .keyDown,
+                  selectedPathIndex != nil || !lassoSelection.isEmpty else { return event }
             deleteSelectedShape()
             return nil
         default:
@@ -165,10 +176,19 @@ final class AppModel {
         }
     }
 
+    /// Deletes the wand selection if there is one, else the clicked shape.
     func deleteSelectedShape() {
+        if !lassoSelection.isEmpty {
+            let group = lassoSelection.sorted()
+            deletedPaths.formUnion(group)
+            deletionStack.append(group)
+            lassoSelection = []
+            schedulePostProcess()
+            return
+        }
         guard let index = selectedPathIndex else { return }
         deletedPaths.insert(index)
-        deletionStack.append(index)
+        deletionStack.append([index])
         selectedPathIndex = nil
         schedulePostProcess()
     }
@@ -176,10 +196,28 @@ final class AppModel {
     var canUndoDeletion: Bool { !deletionStack.isEmpty }
 
     func undoDeleteShape() {
-        guard let index = deletionStack.popLast() else { return }
-        deletedPaths.remove(index)
-        selectedPathIndex = index
+        guard let group = deletionStack.popLast() else { return }
+        deletedPaths.subtract(group)
+        if group.count == 1 {
+            selectedPathIndex = group[0]
+            lassoSelection = []
+        } else {
+            setLassoSelection(Set(group))
+        }
         schedulePostProcess()
+    }
+
+    // MARK: - Selection
+
+    /// Single click-selection from the preview; replaces any wand selection.
+    func selectPath(_ index: Int?) {
+        selectedPathIndex = index
+        lassoSelection = []
+    }
+
+    func setLassoSelection(_ indices: Set<Int>) {
+        lassoSelection = indices
+        if !indices.isEmpty { selectedPathIndex = nil }
     }
 
     // MARK: - Image input
@@ -220,6 +258,7 @@ final class AppModel {
         lastConversionTime = nil
         errorMessage = nil
         selectedPathIndex = nil
+        lassoSelection = []
         pathOverrides = [:]
         deletedPaths = []
         deletionStack = []
@@ -413,6 +452,7 @@ final class AppModel {
                 // Shapes have new identities after a re-trace; stale per-shape
                 // overrides and deletions would land on the wrong paths.
                 selectedPathIndex = nil
+                lassoSelection = []
                 pathOverrides = [:]
                 deletedPaths = []
                 deletionStack = []

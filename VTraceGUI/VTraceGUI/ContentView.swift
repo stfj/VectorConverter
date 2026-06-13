@@ -128,8 +128,16 @@ struct ContentView: View {
                 Text("shape \(index + 1) selected")
                     .foregroundStyle(Color.accentColor)
             }
+            if !model.lassoSelection.isEmpty {
+                Text("\(model.lassoSelection.count) shapes selected — scroll to set size cutoff, delete to remove")
+                    .foregroundStyle(Color.accentColor)
+            }
             if model.previewTool == .zoom {
                 Text("zoom tool — click to zoom, ⌥-click out, V for cursor")
+                    .foregroundStyle(Color.accentColor)
+            }
+            if model.previewTool == .wand {
+                Text("wand tool — drag a lasso around shapes, V for cursor")
                     .foregroundStyle(Color.accentColor)
             }
             if let error = model.errorMessage {
