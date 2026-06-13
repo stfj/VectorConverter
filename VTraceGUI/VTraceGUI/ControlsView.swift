@@ -91,15 +91,15 @@ struct ControlsView: View {
                           value: $model.simplification.maxNodes, range: 0...32,
                           offBelow: 3)
 
+                if model.simplification.isActive {
+                    SliderRow(label: "Corner Angle", hint: "Smoother",
+                              value: $model.simplification.cornerAngle, range: 15...180)
+                }
+
                 if model.colorCount > 1 {
                     SliderRow(label: "Colors", hint: "Smash similar",
                               value: colorsBinding,
                               range: 1...Double(model.colorCount))
-                }
-
-                if model.simplification.isActive {
-                    SliderRow(label: "Corner Angle", hint: "Smoother",
-                              value: $model.simplification.cornerAngle, range: 15...180)
                 }
 
                 if let index = model.selectedPathIndex {
