@@ -464,6 +464,54 @@ struct SVGPreviewView: NSViewRepresentable {
             return inside;
         }
 
+        // Rough filled area of a path, via the shoelace formula over its
+        // on-curve anchor points (curve bulge ignored — fast, no layout reads).
+        // Signed areas sum per subpath, so holes (opposite winding) subtract:
+        // a thin outline reads as small, a solid interior as large. Translate
+        // transforms don't affect area, so they're ignored.
+        function shapeArea(p) {
+            const d = p.getAttribute('d');
+            if (!d) return 0;
+            const tokens = d.match(/[A-Za-z]|[-+0-9.eE]+/g);
+            if (!tokens) return 0;
+            let i = 0, cmd = '', cx = 0, cy = 0, sx = 0, sy = 0, area2 = 0, open = false;
+            const num = () => parseFloat(tokens[i++]);
+            const closeSub = () => {
+                if (open) { area2 += cx * sy - sx * cy; open = false; }
+            };
+            while (i < tokens.length) {
+                const t = tokens[i];
+                if (t.length === 1 && /[A-Za-z]/.test(t)) {
+                    cmd = t; i++;
+                    if (cmd === 'Z' || cmd === 'z') { closeSub(); cx = sx; cy = sy; continue; }
+                } else if (cmd === 'M') cmd = 'L';
+                else if (cmd === 'm') cmd = 'l';
+                else if (cmd === 'Z' || cmd === 'z' || cmd === '') return 0;
+
+                if (cmd === 'M' || cmd === 'm') {
+                    closeSub();
+                    let x = num(), y = num();
+                    if (isNaN(x) || isNaN(y)) break;
+                    if (cmd === 'm') { x += cx; y += cy; }
+                    cx = x; cy = y; sx = x; sy = y; open = true;
+                } else if (cmd === 'L' || cmd === 'l') {
+                    let x = num(), y = num();
+                    if (isNaN(x) || isNaN(y)) break;
+                    if (cmd === 'l') { x += cx; y += cy; }
+                    area2 += cx * y - x * cy; cx = x; cy = y;
+                } else if (cmd === 'C' || cmd === 'c') {
+                    let x1 = num(), y1 = num(), x2 = num(), y2 = num(), x = num(), y = num();
+                    if (isNaN(x) || isNaN(y)) break;
+                    if (cmd === 'c') { x += cx; y += cy; }
+                    area2 += cx * y - x * cy; cx = x; cy = y;
+                } else {
+                    return 0;   // unsupported command
+                }
+            }
+            closeSub();
+            return Math.abs(area2) / 2;
+        }
+
         function applyThreshold() {
             selectedIndices = candidates.filter(c => c.size <= threshold).map(c => c.idx);
             wandMode = true;
@@ -483,8 +531,7 @@ struct SVGPreviewView: NSViewRepresentable {
                 if (p.style.display === 'none') return; // optimistically hidden delete
                 const r = p.getBoundingClientRect();
                 if (!pointInPolygon(r.left + r.width / 2, r.top + r.height / 2, lassoPts)) return;
-                const b = p.getBBox();   // SVG units: zoom-independent size
-                candidates.push({ idx: idx, size: Math.max(b.width * b.height, 1e-6) });
+                candidates.push({ idx: idx, size: Math.max(shapeArea(p), 1e-6) });
             });
             threshold = candidates.reduce((m, c) => Math.max(m, c.size), 0);
             applyThreshold();
