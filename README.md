@@ -6,6 +6,7 @@ space bar to pan / hide control points
 z to zoom tool
 v to cursor tool
 w to magic wand lasso — drag around shapes, scroll to set the size cutoff so only small shapes stay selected
+a to edit points — select a shape with v first, then click its anchor points and delete them (the shape stays connected)
 
 delete / command-z to delete shapes you dont want or undo that.
 

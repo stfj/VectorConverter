@@ -11,6 +11,7 @@ enum PreviewTool {
     case cursor
     case zoom
     case wand
+    case anchor
 }
 
 @MainActor
@@ -29,12 +30,22 @@ final class AppModel {
     /// Post-processing applied on top of vtracer's output; re-runs on the
     /// cached raw SVG without invoking the CLI again.
     var simplification = SimplificationSettings() {
-        didSet { if simplification != oldValue { schedulePostProcess() } }
+        didSet {
+            if simplification != oldValue {
+                // Re-simplifying shifts anchor indices, invalidating point edits.
+                pointDeletions = [:]
+                selectedAnchors = []
+                schedulePostProcess()
+            }
+        }
     }
 
     /// Active preview tool: cursor selects shapes, zoom clicks zoom in
-    /// (⌥-click zooms out). Z/V switch tools.
-    private(set) var previewTool = PreviewTool.cursor
+    /// (⌥-click zooms out), wand lassos shapes, anchor edits points.
+    /// Z/V/W/A switch tools.
+    private(set) var previewTool = PreviewTool.cursor {
+        didSet { if previewTool != oldValue { selectedAnchors = [] } }
+    }
 
     /// True while the space bar is held: temporary hand tool for panning,
     /// also hides the selected shape's control points.
@@ -50,6 +61,16 @@ final class AppModel {
     /// the single click-selection above.
     private(set) var lassoSelection: Set<Int> = []
 
+    /// Anchor points selected with the point tool (A), as indices into the
+    /// currently-displayed path of `selectedPathIndex` (i.e. after any prior
+    /// point deletions). Reported from the preview; consumed on delete.
+    private(set) var selectedAnchors: Set<Int> = []
+
+    /// Per-shape anchor removals applied as the final post-process step,
+    /// keyed by raw-SVG path index. Indices are into that path's simplified
+    /// output before removal. Cleared on re-trace or any geometry change.
+    private(set) var pointDeletions: [Int: Set<Int>] = [:]
+
     /// Per-shape simplification settings, keyed by path index in the raw SVG.
     /// Cleared whenever vtracer re-runs, since shape identity changes.
     private(set) var pathOverrides: [Int: SimplificationSettings] = [:]
@@ -57,9 +78,13 @@ final class AppModel {
     /// Raw-SVG indices of shapes the user deleted. Cleared on re-trace.
     private(set) var deletedPaths: Set<Int> = []
 
-    /// Deletion order, for undo. Each entry is one delete action; a wand
-    /// delete removes (and restores) its whole group at once.
-    private var deletionStack: [[Int]] = []
+    /// Reversible edit history for ⌘Z. A wand delete restores its whole group
+    /// at once; a point delete restores exactly the anchors it removed.
+    private enum EditAction {
+        case deleteShapes([Int])
+        case deletePoints(path: Int, anchors: [Int])
+    }
+    private var undoStack: [EditAction] = []
 
     /// Bumped each time a new source image is loaded; the preview keys off this.
     private(set) var imageVersion = 0
@@ -143,6 +168,10 @@ final class AppModel {
                 previewTool = .wand
                 return nil
             }
+            if key == "a" {
+                previewTool = .anchor
+                return nil
+            }
         }
 
         // ⌘C / ⌘V: handle here because the preview WKWebView becomes first
@@ -170,10 +199,16 @@ final class AppModel {
             }
             return nil
         case 51, 117: // backspace, forward delete
-            guard event.type == .keyDown,
-                  selectedPathIndex != nil || !lassoSelection.isEmpty else { return event }
-            deleteSelectedShape()
-            return nil
+            guard event.type == .keyDown else { return event }
+            if previewTool == .anchor, selectedPathIndex != nil, !selectedAnchors.isEmpty {
+                deleteSelectedAnchors()
+                return nil
+            }
+            if selectedPathIndex != nil || !lassoSelection.isEmpty {
+                deleteSelectedShape()
+                return nil
+            }
+            return event
         default:
             return event
         }
@@ -184,28 +219,70 @@ final class AppModel {
         if !lassoSelection.isEmpty {
             let group = lassoSelection.sorted()
             deletedPaths.formUnion(group)
-            deletionStack.append(group)
+            undoStack.append(.deleteShapes(group))
             lassoSelection = []
             schedulePostProcess()
             return
         }
         guard let index = selectedPathIndex else { return }
         deletedPaths.insert(index)
-        deletionStack.append([index])
+        undoStack.append(.deleteShapes([index]))
         selectedPathIndex = nil
         schedulePostProcess()
     }
 
-    var canUndoDeletion: Bool { !deletionStack.isEmpty }
+    /// Removes the anchor points selected with the point tool from the selected
+    /// shape, keeping it a continuous (still-closed) shape.
+    func deleteSelectedAnchors() {
+        guard let shape = selectedPathIndex, !selectedAnchors.isEmpty else { return }
+        let existing = pointDeletions[shape] ?? []
+        // The preview reports indices into the displayed (already-reduced) path;
+        // translate them back to indices in the path's full simplified output.
+        let added = selectedAnchors
+            .map { originalAnchorIndex(displayed: $0, deleted: existing) }
+            .filter { !existing.contains($0) }
+        selectedAnchors = []
+        guard !added.isEmpty else { return }
+        pointDeletions[shape] = existing.union(added)
+        undoStack.append(.deletePoints(path: shape, anchors: added))
+        schedulePostProcess()
+    }
 
-    func undoDeleteShape() {
-        guard let group = deletionStack.popLast() else { return }
-        deletedPaths.subtract(group)
-        if group.count == 1 {
-            selectedPathIndex = group[0]
-            lassoSelection = []
-        } else {
-            setLassoSelection(Set(group))
+    /// The N-th not-yet-deleted anchor's index in the full (pre-removal) path.
+    private func originalAnchorIndex(displayed: Int, deleted: Set<Int>) -> Int {
+        var original = 0, seen = 0
+        while true {
+            if !deleted.contains(original) {
+                if seen == displayed { return original }
+                seen += 1
+            }
+            original += 1
+        }
+    }
+
+    func setSelectedAnchors(_ indices: Set<Int>) {
+        selectedAnchors = indices
+    }
+
+    var canUndoDeletion: Bool { !undoStack.isEmpty }
+
+    func undoLastEdit() {
+        guard let action = undoStack.popLast() else { return }
+        switch action {
+        case .deleteShapes(let group):
+            deletedPaths.subtract(group)
+            if group.count == 1 {
+                selectedPathIndex = group[0]
+                lassoSelection = []
+            } else {
+                setLassoSelection(Set(group))
+            }
+        case .deletePoints(let path, let anchors):
+            if var set = pointDeletions[path] {
+                set.subtract(anchors)
+                pointDeletions[path] = set.isEmpty ? nil : set
+            }
+            selectPath(path)
         }
         schedulePostProcess()
     }
@@ -216,6 +293,7 @@ final class AppModel {
     func selectPath(_ index: Int?) {
         selectedPathIndex = index
         lassoSelection = []
+        selectedAnchors = []
     }
 
     func setLassoSelection(_ indices: Set<Int>) {
@@ -262,9 +340,11 @@ final class AppModel {
         errorMessage = nil
         selectedPathIndex = nil
         lassoSelection = []
+        selectedAnchors = []
         pathOverrides = [:]
+        pointDeletions = [:]
         deletedPaths = []
-        deletionStack = []
+        undoStack = []
         imageVersion += 1
         prepareInput()
     }
@@ -356,11 +436,16 @@ final class AppModel {
 
     func setOverride(_ settings: SimplificationSettings, for index: Int) {
         pathOverrides[index] = settings
+        // This shape's anchors shift; drop its now-stale point edits.
+        pointDeletions[index] = nil
+        if selectedPathIndex == index { selectedAnchors = [] }
         schedulePostProcess()
     }
 
     func clearOverride(for index: Int) {
         guard pathOverrides.removeValue(forKey: index) != nil else { return }
+        pointDeletions[index] = nil
+        if selectedPathIndex == index { selectedAnchors = [] }
         schedulePostProcess()
     }
 
@@ -456,9 +541,11 @@ final class AppModel {
                 // overrides and deletions would land on the wrong paths.
                 selectedPathIndex = nil
                 lassoSelection = []
+                selectedAnchors = []
                 pathOverrides = [:]
+                pointDeletions = [:]
                 deletedPaths = []
-                deletionStack = []
+                undoStack = []
                 await applyPostProcess(to: raw, generation: gen, conversionStart: start)
             } catch is CancellationError {
                 // Superseded by a newer conversion; the newer one owns the UI state.
@@ -491,8 +578,10 @@ final class AppModel {
         let simplify = simplification
         let overrides = pathOverrides
         let deleted = deletedPaths
+        let points = pointDeletions
         let result = await Task.detached(priority: .userInitiated) {
-            SVGSimplifier.process(raw, settings: simplify, overrides: overrides, deleted: deleted)
+            SVGSimplifier.process(raw, settings: simplify, overrides: overrides,
+                                  deleted: deleted, pointDeletions: points)
         }.value
         guard gen == generation else { return }
         svgText = result.svg

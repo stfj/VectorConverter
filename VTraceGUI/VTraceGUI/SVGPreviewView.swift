@@ -56,6 +56,7 @@ struct SVGPreviewView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.userContentController.add(context.coordinator, name: "pathClick")
         configuration.userContentController.add(context.coordinator, name: "lassoSelect")
+        configuration.userContentController.add(context.coordinator, name: "anchorSelect")
         let webView = ImageDropWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         let model = model
@@ -71,6 +72,7 @@ struct SVGPreviewView: NSViewRepresentable {
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "pathClick")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "lassoSelect")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "anchorSelect")
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
@@ -105,6 +107,7 @@ struct SVGPreviewView: NSViewRepresentable {
             case .cursor: name = "cursor"
             case .zoom: name = "zoom"
             case .wand: name = "wand"
+            case .anchor: name = "anchor"
             }
             coordinator.run(webView, "setTool('\(name)')")
         }
@@ -177,6 +180,10 @@ struct SVGPreviewView: NSViewRepresentable {
                 Task { @MainActor in
                     model.setLassoSelection(set)
                 }
+            } else if message.name == "anchorSelect", let indices = message.body as? [Int] {
+                Task { @MainActor in
+                    model.setSelectedAnchors(Set(indices))
+                }
             }
         }
     }
@@ -230,6 +237,9 @@ struct SVGPreviewView: NSViewRepresentable {
         body.tool-hand #stage { cursor: grab; }
         body.tool-hand.panning #stage { cursor: grabbing; }
         body.tool-wand #stage { cursor: crosshair; }
+        /* Point tool: shapes aren't click targets — only the anchor dots are. */
+        body.tool-anchor #overlay svg > path { pointer-events: none; }
+        body.tool-anchor #stage { cursor: crosshair; }
         #lasso {
             position: fixed;
             inset: 0;
@@ -331,6 +341,8 @@ struct SVGPreviewView: NSViewRepresentable {
                 s.removeAttribute('height');
                 raster.style.opacity = 0;
             }
+            // The path geometry just changed; any anchor selection is stale.
+            selectedAnchorSet.clear();
             rebuildPoints();
         }
 
@@ -343,12 +355,17 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         // ---- Tools, zoom & pan ----
-        let tool = 'cursor';        // 'cursor' | 'zoom' | 'wand'
+        let tool = 'cursor';        // 'cursor' | 'zoom' | 'wand' | 'anchor'
         let spaceDown = false;      // hand tool while held; also hides points
         let altDown = false;
         let scale = 1, tx = 0, ty = 0;
 
-        function setTool(t) { tool = t; updateToolClasses(); }
+        function setTool(t) {
+            if (t !== 'anchor') selectedAnchorSet.clear();
+            tool = t;
+            updateToolClasses();
+            rebuildPoints();
+        }
         function setSpaceDown(d) { spaceDown = d; updateToolClasses(); rebuildPoints(); }
         function setAltDown(d) { altDown = d; updateToolClasses(); }
 
@@ -391,6 +408,13 @@ struct SVGPreviewView: NSViewRepresentable {
                     lassoPts = [[e.clientX, e.clientY]];
                     drawLasso(false);
                     e.preventDefault();
+                } else if (tool === 'anchor') {
+                    // Pressing on an anchor dot toggles it (handled on click);
+                    // pressing empty space begins a box select.
+                    if (e.target && e.target.tagName === 'circle') return;
+                    marquee = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
+                    marqueeMoved = false;
+                    e.preventDefault();
                 }
                 return;
             }
@@ -401,6 +425,15 @@ struct SVGPreviewView: NSViewRepresentable {
             e.preventDefault();
         });
         document.addEventListener('mousemove', e => {
+            if (marquee) {
+                marquee.x1 = e.clientX; marquee.y1 = e.clientY;
+                const dx = e.clientX - marquee.x0, dy = e.clientY - marquee.y0;
+                if (marqueeMoved || dx * dx + dy * dy >= 9) {
+                    marqueeMoved = true;
+                    drawMarquee(marquee.x0, marquee.y0, e.clientX, e.clientY);
+                }
+                return;
+            }
             if (lassoActive) {
                 const last = lassoPts[lassoPts.length - 1];
                 const dx = e.clientX - last[0], dy = e.clientY - last[1];
@@ -415,7 +448,16 @@ struct SVGPreviewView: NSViewRepresentable {
             ty = panTy + e.clientY - panStartY;
             wrap.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
         });
-        document.addEventListener('mouseup', () => {
+        document.addEventListener('mouseup', e => {
+            if (marquee) {
+                if (marqueeMoved) {
+                    applyMarquee(marquee.x0, marquee.y0, marquee.x1, marquee.y1, e.shiftKey);
+                    suppressAnchorClick = true;   // don't let the trailing click clear it
+                }
+                clearMarquee();
+                marquee = null;
+                return;
+            }
             if (lassoActive) {
                 finishLasso();
                 return;
@@ -575,6 +617,11 @@ struct SVGPreviewView: NSViewRepresentable {
         // ---- Shape selection ----
         let selectedIndices = [];
         let wandMode = false;   // wand selections show yellow outlines, not points
+        const selectedAnchorSet = new Set();   // displayed anchor indices (point tool)
+        let anchorCircles = [];                // {i, el} for the drawn anchor dots
+        // Rubber-band box select for the point tool (screen coords).
+        let marquee = null, marqueeMoved = false, marqueeEl = null;
+        let suppressAnchorClick = false;
 
         function shapePaths() {
             const s = overlay.querySelector('svg');
@@ -586,7 +633,50 @@ struct SVGPreviewView: NSViewRepresentable {
             if (idx < 0 && selectedIndices.length > 1) return;
             selectedIndices = idx >= 0 ? [idx] : [];
             wandMode = false;
+            selectedAnchorSet.clear();   // different shape → anchors no longer apply
             if (idx < 0) clearLasso();
+            rebuildPoints();
+        }
+
+        function reportAnchors() {
+            try {
+                window.webkit.messageHandlers.anchorSelect.postMessage(Array.from(selectedAnchorSet));
+            } catch (err) {}
+        }
+
+        function toggleAnchor(i) {
+            if (selectedAnchorSet.has(i)) selectedAnchorSet.delete(i);
+            else selectedAnchorSet.add(i);
+            reportAnchors();
+            rebuildPoints();
+        }
+
+        function drawMarquee(x0, y0, x1, y1) {
+            if (!marqueeEl) {
+                marqueeEl = document.createElementNS(SVGNS, 'path');
+                lassoSvg.appendChild(marqueeEl);
+            }
+            const xa = Math.min(x0, x1), ya = Math.min(y0, y1);
+            const xb = Math.max(x0, x1), yb = Math.max(y0, y1);
+            marqueeEl.setAttribute('d', 'M' + xa + ' ' + ya + 'H' + xb + 'V' + yb + 'H' + xa + 'Z');
+        }
+
+        function clearMarquee() {
+            if (marqueeEl) { marqueeEl.remove(); marqueeEl = null; }
+        }
+
+        // Select every anchor dot whose screen position falls in the box.
+        // Plain drag replaces the selection; shift-drag adds to it.
+        function applyMarquee(x0, y0, x1, y1, additive) {
+            const xa = Math.min(x0, x1), ya = Math.min(y0, y1);
+            const xb = Math.max(x0, x1), yb = Math.max(y0, y1);
+            if (!additive) selectedAnchorSet.clear();
+            anchorCircles.forEach(({ i, el }) => {
+                const r = el.getBoundingClientRect();
+                const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                if (cx >= xa && cx <= xb && cy >= ya && cy <= yb) selectedAnchorSet.add(i);
+            });
+            reportAnchors();
             rebuildPoints();
         }
 
@@ -610,6 +700,14 @@ struct SVGPreviewView: NSViewRepresentable {
             if (spaceDown) return;
             if (tool === 'zoom') {
                 zoomAt(e.clientX, e.clientY, (altDown || e.altKey) ? 1 / 1.5 : 1.5);
+                return;
+            }
+            if (tool === 'anchor') {
+                // A box select just finished — keep its result, don't clear.
+                if (suppressAnchorClick) { suppressAnchorClick = false; return; }
+                // Anchor dots stop propagation, so this is an empty-space click:
+                // clear the point selection but keep the shape selected.
+                if (selectedAnchorSet.size) { selectedAnchorSet.clear(); reportAnchors(); rebuildPoints(); }
                 return;
             }
             if (tool === 'wand') return;   // clicks are lasso strokes here
@@ -712,6 +810,30 @@ struct SVGPreviewView: NSViewRepresentable {
             });
             const g = document.createElementNS(SVGNS, 'g');
             g.setAttribute('id', 'ctrlpts');
+
+            // Point tool: anchors become individually selectable dots.
+            if (tool === 'anchor' && selectedIndices.length === 1) {
+                g.setAttribute('pointer-events', 'auto');
+                anchorCircles = [];
+                out.anchors.forEach((a, i) => {
+                    const c = document.createElementNS(SVGNS, 'circle');
+                    c.setAttribute('cx', a[0]);
+                    c.setAttribute('cy', a[1]);
+                    c.setAttribute('r', 4 / scale);
+                    const sel = selectedAnchorSet.has(i);
+                    c.setAttribute('fill', sel ? '#30d158' : '#ff3b30');
+                    c.setAttribute('stroke', '#fff');
+                    c.setAttribute('stroke-width', (sel ? 1.5 : 1) / scale);
+                    c.style.cursor = 'pointer';
+                    c.addEventListener('click', ev => { ev.stopPropagation(); toggleAnchor(i); });
+                    g.appendChild(c);
+                    anchorCircles.push({ i, el: c });
+                });
+                s.appendChild(g);
+                return;
+            }
+            anchorCircles = [];
+
             g.setAttribute('pointer-events', 'none');
             let handleD = '', anchorD = '', ctrlD = '';
             out.handles.forEach(h => { handleD += 'M' + h[0] + ' ' + h[1] + 'L' + h[2] + ' ' + h[3]; });

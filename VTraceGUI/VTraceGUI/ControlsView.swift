@@ -107,7 +107,7 @@ struct ControlsView: View {
                 } else if !model.lassoSelection.isEmpty {
                     lassoPanel
                 } else {
-                    Text("Click a shape in the preview to see its control points and simplify it individually. Delete removes it. Z = zoom tool (⌥ zooms out), V = cursor, W = magic wand lasso (scroll to set the size cutoff), hold Space to pan.")
+                    Text("Click a shape in the preview to see its control points and simplify it individually. Delete removes it. Z = zoom tool (⌥ zooms out), V = cursor, W = magic wand lasso (scroll to set the size cutoff), A = edit points (select a shape first, then click its points), hold Space to pan.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -188,6 +188,25 @@ struct ControlsView: View {
                     model.clearOverride(for: index)
                 }
                 .controlSize(.small)
+            }
+
+            if model.previewTool == .anchor {
+                Divider()
+                if model.selectedAnchors.isEmpty {
+                    Text("Point tool — click anchor points, or drag a box around them (⇧-drag to add), then press Delete.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack {
+                        Text("\(model.selectedAnchors.count) point\(model.selectedAnchors.count == 1 ? "" : "s") selected")
+                            .font(.callout.weight(.medium))
+                        Spacer()
+                        Button("Delete Points", role: .destructive) {
+                            model.deleteSelectedAnchors()
+                        }
+                        .controlSize(.small)
+                    }
+                }
             }
         }
         .padding(10)

@@ -147,6 +147,18 @@ struct ContentView: View {
                 Text("wand tool — drag a lasso around shapes, V for cursor")
                     .foregroundStyle(Color.accentColor)
             }
+            if model.previewTool == .anchor {
+                if !model.selectedAnchors.isEmpty {
+                    Text("\(model.selectedAnchors.count) point\(model.selectedAnchors.count == 1 ? "" : "s") selected — delete to remove")
+                        .foregroundStyle(Color.accentColor)
+                } else if model.selectedPathIndex != nil {
+                    Text("point tool — click or drag a box around points, delete to remove, V for cursor")
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text("point tool — select a shape with V first, then press A")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
             if let error = model.errorMessage {
                 Text(error)
                     .foregroundStyle(.red)

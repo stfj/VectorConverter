@@ -56,7 +56,8 @@ nonisolated enum SVGSimplifier {
     /// selection; exports strip the placeholders.
     static func process(_ svg: String, settings: SimplificationSettings,
                         overrides: [Int: SimplificationSettings] = [:],
-                        deleted: Set<Int> = []) -> Result {
+                        deleted: Set<Int> = [],
+                        pointDeletions: [Int: Set<Int>] = [:]) -> Result {
         let (svg, inputColors, outputColors) = mergeFills(in: svg, budget: settings.colorBudget)
         let ns = svg as NSString
         let regex = try! NSRegularExpression(pattern: "d=\"([^\"]*)\"")
@@ -91,12 +92,24 @@ nonisolated enum SVGSimplifier {
             }
             let inCount = pointCount(of: subpaths)
             inputPoints += inCount
+            let removed = pointDeletions[pathIndex - 1] ?? []
 
             if effective.isActive {
                 let simplified = subpaths.map { simplifySubpath($0, settings: effective) }
-                outputPoints += pointCount(of: simplified)
-                outputNodes += nodeCount(of: simplified)
-                output += "d=\"\(emit(simplified))\""
+                var dOut = emit(simplified)
+                if !removed.isEmpty { dOut = removeAnchors(dOut, removed) }
+                let counted = parsePathData(dOut) ?? simplified
+                outputPoints += pointCount(of: counted)
+                outputNodes += nodeCount(of: counted)
+                output += "d=\"\(dOut)\""
+            } else if !removed.isEmpty {
+                // Re-emit canonically (anchor indices match the preview's
+                // parse), then drop the requested anchors.
+                let dOut = removeAnchors(emit(subpaths), removed)
+                let counted = parsePathData(dOut) ?? subpaths
+                outputPoints += pointCount(of: counted)
+                outputNodes += nodeCount(of: counted)
+                output += "d=\"\(dOut)\""
             } else {
                 outputPoints += inCount
                 outputNodes += nodeCount(of: subpaths)
@@ -215,6 +228,111 @@ nonisolated enum SVGSimplifier {
     /// Anchor points only (what a vector editor calls nodes).
     private static func nodeCount(of subpaths: [SubPath]) -> Int {
         subpaths.reduce(0) { $0 + 1 + $1.segments.count }
+    }
+
+    // MARK: - Anchor removal (point-editing tool)
+
+    /// One outgoing edge between two anchors; endpoints are implicit from the
+    /// node list, so only the curve controls travel with it.
+    private struct Edge {
+        var isCubic: Bool
+        var c1: CGPoint
+        var c2: CGPoint
+        static let line = Edge(isCubic: false, c1: .zero, c2: .zero)
+    }
+
+    /// Removes anchors at the given global indices (document order, matching
+    /// the preview's `parseD`: each subpath contributes its start anchor, then
+    /// one per segment endpoint) and reconnects each affected subpath so it
+    /// stays a single continuous, still-closed-if-it-was shape. Returns the
+    /// input unchanged if it can't be parsed or removal would empty it.
+    static func removeAnchors(_ d: String, _ remove: Set<Int>) -> String {
+        guard !remove.isEmpty, let subpaths = parsePathData(d) else { return d }
+        var result: [SubPath] = []
+        var base = 0
+        for sp in subpaths {
+            let anchorCount = 1 + sp.segments.count
+            var local: Set<Int> = []
+            for a in 0..<anchorCount where remove.contains(base + a) { local.insert(a) }
+            base += anchorCount
+            if local.isEmpty {
+                result.append(sp)
+            } else if let reduced = removeAnchors(from: sp, local: local) {
+                result.append(reduced)
+            }
+        }
+        // Every subpath collapsed: emit an empty placeholder (same convention
+        // as a deleted shape) rather than leaving the original untouched.
+        guard !result.isEmpty else { return "" }
+        return emit(result)
+    }
+
+    private static func removeAnchors(from sp: SubPath, local: Set<Int>) -> SubPath? {
+        var pts: [CGPoint] = [sp.start]
+        var out: [Edge] = []
+        for seg in sp.segments {
+            switch seg {
+            case .line(let p):
+                out.append(.line); pts.append(p)
+            case .cubic(let c1, let c2, let p):
+                out.append(Edge(isCubic: true, c1: c1, c2: c2)); pts.append(p)
+            }
+        }
+        if sp.closed { out.append(.line) }   // implicit straight Z close
+
+        // Remove every requested anchor (no order-dependent floor): the result
+        // is the same set of survivors however the deletions were batched.
+        // Descending order keeps the surviving indices stable as we go.
+        for k in local.sorted(by: >) {
+            let n = pts.count
+            guard n >= 2 else { break }
+            if sp.closed {
+                let prev = (k - 1 + n) % n
+                let next = (k + 1) % n
+                out[prev] = merge(out[prev], from: pts[prev], out[k], to: pts[next])
+                pts.remove(at: k); out.remove(at: k)
+            } else if k == 0 {
+                pts.removeFirst(); out.removeFirst()
+            } else if k == n - 1 {
+                pts.remove(at: k); out.remove(at: k - 1)
+            } else {
+                out[k - 1] = merge(out[k - 1], from: pts[k - 1], out[k], to: pts[k + 1])
+                pts.remove(at: k); out.remove(at: k)
+            }
+        }
+
+        let n = pts.count
+        guard n >= 2 else { return nil }
+        var segments: [Segment] = []
+        if sp.closed {
+            for i in 0..<n {
+                let endpoint = pts[(i + 1) % n]
+                let isClosing = i == n - 1
+                // The closing edge is recreated by Z when it's a straight line;
+                // only emit it explicitly when it carries a curve.
+                if isClosing && !out[i].isCubic { continue }
+                segments.append(segment(out[i], endpoint: endpoint))
+            }
+        } else {
+            for i in 0..<(n - 1) {
+                segments.append(segment(out[i], endpoint: pts[i + 1]))
+            }
+        }
+        guard !segments.isEmpty else { return nil }
+        return SubPath(start: pts[0], segments: segments, closed: sp.closed)
+    }
+
+    /// Joins two consecutive edges (A→P, P→B) into one A→B, dropping the shared
+    /// anchor P. Keeps the outer control handles; synthesizes thirds for a line.
+    private static func merge(_ e1: Edge, from a: CGPoint, _ e2: Edge, to b: CGPoint) -> Edge {
+        guard e1.isCubic || e2.isCubic else { return .line }
+        return Edge(isCubic: true,
+                    c1: e1.isCubic ? e1.c1 : lerp(a, b, 1.0 / 3.0),
+                    c2: e2.isCubic ? e2.c2 : lerp(a, b, 2.0 / 3.0))
+    }
+
+    private static func segment(_ e: Edge, endpoint: CGPoint) -> Segment {
+        e.isCubic ? .cubic(e.c1, e.c2, endpoint) : .line(endpoint)
     }
 
     // MARK: - Parsing (vtracer emits absolute M/L/C/Z; relative supported for safety)

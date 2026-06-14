@@ -25,7 +25,7 @@ struct VTraceGUIApp: App {
                     .disabled(model.svgText == nil)
             }
             CommandGroup(replacing: .undoRedo) {
-                Button("Undo Delete Shape") { model.undoDeleteShape() }
+                Button("Undo") { model.undoLastEdit() }
                     .keyboardShortcut("z")
                     .disabled(!model.canUndoDeletion)
             }
