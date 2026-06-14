@@ -32,8 +32,9 @@ final class AppModel {
     var simplification = SimplificationSettings() {
         didSet {
             if simplification != oldValue {
-                // Re-simplifying shifts anchor indices, invalidating point edits.
-                pointDeletions = [:]
+                // Edited shapes re-simplify from their baked geometry, so point
+                // edits persist; only the live anchor selection (indices into the
+                // about-to-change display) is stale.
                 selectedAnchors = []
                 schedulePostProcess()
             }
@@ -66,10 +67,11 @@ final class AppModel {
     /// point deletions). Reported from the preview; consumed on delete.
     private(set) var selectedAnchors: Set<Int> = []
 
-    /// Per-shape anchor removals applied as the final post-process step,
-    /// keyed by raw-SVG path index. Indices are into that path's simplified
-    /// output before removal. Cleared on re-trace or any geometry change.
-    private(set) var pointDeletions: [Int: Set<Int>] = [:]
+    /// Per-shape baked geometry from the point tool, keyed by raw-SVG path
+    /// index. When present it replaces the raw trace as the simplifier's input
+    /// for that path, so deleted points survive (and re-simplify with) knob
+    /// changes. Cleared only on re-trace, when raw shape identity changes.
+    private(set) var editedGeometry: [Int: String] = [:]
 
     /// Per-shape simplification settings, keyed by path index in the raw SVG.
     /// Cleared whenever vtracer re-runs, since shape identity changes.
@@ -82,7 +84,7 @@ final class AppModel {
     /// at once; a point delete restores exactly the anchors it removed.
     private enum EditAction {
         case deleteShapes([Int])
-        case deletePoints(path: Int, anchors: [Int])
+        case deletePoints(path: Int, previous: String?)
     }
     private var undoStack: [EditAction] = []
 
@@ -232,32 +234,30 @@ final class AppModel {
     }
 
     /// Removes the anchor points selected with the point tool from the selected
-    /// shape, keeping it a continuous (still-closed) shape.
+    /// shape, keeping it a continuous (still-closed) shape. The result is baked
+    /// as the shape's geometry, so it survives — and re-simplifies with — later
+    /// knob changes. Indices are into the currently-displayed path, so removal
+    /// is applied to exactly what the user clicked.
     func deleteSelectedAnchors() {
-        guard let shape = selectedPathIndex, !selectedAnchors.isEmpty else { return }
-        let existing = pointDeletions[shape] ?? []
-        // The preview reports indices into the displayed (already-reduced) path;
-        // translate them back to indices in the path's full simplified output.
-        let added = selectedAnchors
-            .map { originalAnchorIndex(displayed: $0, deleted: existing) }
-            .filter { !existing.contains($0) }
+        guard let shape = selectedPathIndex, !selectedAnchors.isEmpty,
+              let displayed = currentPathD(shape) else { selectedAnchors = []; return }
+        let edited = SVGSimplifier.removeAnchors(displayed, selectedAnchors)
         selectedAnchors = []
-        guard !added.isEmpty else { return }
-        pointDeletions[shape] = existing.union(added)
-        undoStack.append(.deletePoints(path: shape, anchors: added))
+        guard edited != displayed else { return }
+        undoStack.append(.deletePoints(path: shape, previous: editedGeometry[shape]))
+        editedGeometry[shape] = edited
         schedulePostProcess()
     }
 
-    /// The N-th not-yet-deleted anchor's index in the full (pre-removal) path.
-    private func originalAnchorIndex(displayed: Int, deleted: Set<Int>) -> Int {
-        var original = 0, seen = 0
-        while true {
-            if !deleted.contains(original) {
-                if seen == displayed { return original }
-                seen += 1
-            }
-            original += 1
-        }
+    /// The `d` attribute of the index-th path in the current output SVG (the
+    /// geometry the preview is showing and the user is clicking anchors on).
+    private func currentPathD(_ index: Int) -> String? {
+        guard let svgText else { return nil }
+        let ns = svgText as NSString
+        let regex = try! NSRegularExpression(pattern: "d=\"([^\"]*)\"")
+        let matches = regex.matches(in: svgText, range: NSRange(location: 0, length: ns.length))
+        guard index >= 0, index < matches.count else { return nil }
+        return ns.substring(with: matches[index].range(at: 1))
     }
 
     func setSelectedAnchors(_ indices: Set<Int>) {
@@ -277,11 +277,8 @@ final class AppModel {
             } else {
                 setLassoSelection(Set(group))
             }
-        case .deletePoints(let path, let anchors):
-            if var set = pointDeletions[path] {
-                set.subtract(anchors)
-                pointDeletions[path] = set.isEmpty ? nil : set
-            }
+        case .deletePoints(let path, let previous):
+            editedGeometry[path] = previous
             selectPath(path)
         }
         schedulePostProcess()
@@ -342,7 +339,7 @@ final class AppModel {
         lassoSelection = []
         selectedAnchors = []
         pathOverrides = [:]
-        pointDeletions = [:]
+        editedGeometry = [:]
         deletedPaths = []
         undoStack = []
         imageVersion += 1
@@ -436,15 +433,14 @@ final class AppModel {
 
     func setOverride(_ settings: SimplificationSettings, for index: Int) {
         pathOverrides[index] = settings
-        // This shape's anchors shift; drop its now-stale point edits.
-        pointDeletions[index] = nil
+        // The shape re-simplifies from its baked geometry, so point edits hold;
+        // only the live anchor selection (stale indices) is dropped.
         if selectedPathIndex == index { selectedAnchors = [] }
         schedulePostProcess()
     }
 
     func clearOverride(for index: Int) {
         guard pathOverrides.removeValue(forKey: index) != nil else { return }
-        pointDeletions[index] = nil
         if selectedPathIndex == index { selectedAnchors = [] }
         schedulePostProcess()
     }
@@ -543,7 +539,7 @@ final class AppModel {
                 lassoSelection = []
                 selectedAnchors = []
                 pathOverrides = [:]
-                pointDeletions = [:]
+                editedGeometry = [:]
                 deletedPaths = []
                 undoStack = []
                 await applyPostProcess(to: raw, generation: gen, conversionStart: start)
@@ -578,10 +574,10 @@ final class AppModel {
         let simplify = simplification
         let overrides = pathOverrides
         let deleted = deletedPaths
-        let points = pointDeletions
+        let edited = editedGeometry
         let result = await Task.detached(priority: .userInitiated) {
             SVGSimplifier.process(raw, settings: simplify, overrides: overrides,
-                                  deleted: deleted, pointDeletions: points)
+                                  deleted: deleted, editedGeometry: edited)
         }.value
         guard gen == generation else { return }
         svgText = result.svg

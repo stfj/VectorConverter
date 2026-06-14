@@ -57,7 +57,7 @@ nonisolated enum SVGSimplifier {
     static func process(_ svg: String, settings: SimplificationSettings,
                         overrides: [Int: SimplificationSettings] = [:],
                         deleted: Set<Int> = [],
-                        pointDeletions: [Int: Set<Int>] = [:]) -> Result {
+                        editedGeometry: [Int: String] = [:]) -> Result {
         let (svg, inputColors, outputColors) = mergeFills(in: svg, budget: settings.colorBudget)
         let ns = svg as NSString
         let regex = try! NSRegularExpression(pattern: "d=\"([^\"]*)\"")
@@ -72,8 +72,9 @@ nonisolated enum SVGSimplifier {
         var outputNodes = 0
 
         for match in matches {
-            let effective = overrides[pathIndex] ?? settings
-            let isDeleted = deleted.contains(pathIndex)
+            let index = pathIndex
+            let effective = overrides[index] ?? settings
+            let isDeleted = deleted.contains(index)
             pathIndex += 1
             let full = match.range
             output += ns.substring(with: NSRange(location: cursor, length: full.location - cursor))
@@ -84,32 +85,33 @@ nonisolated enum SVGSimplifier {
                 continue
             }
 
-            let d = ns.substring(with: match.range(at: 1))
-            guard let subpaths = parsePathData(d) else {
+            // A point-edited path feeds its saved geometry into simplification
+            // instead of the raw trace, so the deletions survive knob changes
+            // and the knobs re-simplify the edited shape rather than the original.
+            let editedD = editedGeometry[index]
+            if editedD == "" {
+                output += "d=\"\""   // edited down to nothing
+                continue
+            }
+            let baseD = editedD ?? ns.substring(with: match.range(at: 1))
+            guard let subpaths = parsePathData(baseD) else {
                 // Unsupported path commands: pass through untouched.
                 output += ns.substring(with: full)
                 continue
             }
             let inCount = pointCount(of: subpaths)
             inputPoints += inCount
-            let removed = pointDeletions[pathIndex - 1] ?? []
 
             if effective.isActive {
                 let simplified = subpaths.map { simplifySubpath($0, settings: effective) }
-                var dOut = emit(simplified)
-                if !removed.isEmpty { dOut = removeAnchors(dOut, removed) }
-                let counted = parsePathData(dOut) ?? simplified
-                outputPoints += pointCount(of: counted)
-                outputNodes += nodeCount(of: counted)
-                output += "d=\"\(dOut)\""
-            } else if !removed.isEmpty {
-                // Re-emit canonically (anchor indices match the preview's
-                // parse), then drop the requested anchors.
-                let dOut = removeAnchors(emit(subpaths), removed)
-                let counted = parsePathData(dOut) ?? subpaths
-                outputPoints += pointCount(of: counted)
-                outputNodes += nodeCount(of: counted)
-                output += "d=\"\(dOut)\""
+                outputPoints += pointCount(of: simplified)
+                outputNodes += nodeCount(of: simplified)
+                output += "d=\"\(emit(simplified))\""
+            } else if editedD != nil {
+                // Edited but no active simplification: emit the edit verbatim.
+                outputPoints += inCount
+                outputNodes += nodeCount(of: subpaths)
+                output += "d=\"\(emit(subpaths))\""
             } else {
                 outputPoints += inCount
                 outputNodes += nodeCount(of: subpaths)
