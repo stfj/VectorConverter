@@ -343,6 +343,7 @@ struct SVGPreviewView: NSViewRepresentable {
             }
             // The path geometry just changed; any anchor selection is stale.
             selectedAnchorSet.clear();
+            anchorNearest = null;
             rebuildPoints();
         }
 
@@ -619,6 +620,7 @@ struct SVGPreviewView: NSViewRepresentable {
         let wandMode = false;   // wand selections show yellow outlines, not points
         const selectedAnchorSet = new Set();   // displayed anchor indices (point tool)
         let anchorCircles = [];                // {i, el} for the drawn anchor dots
+        let anchorNearest = null;              // per-anchor nearest-neighbor dist (user units)
         // Rubber-band box select for the point tool (screen coords).
         let marquee = null, marqueeMoved = false, marqueeEl = null;
         let suppressAnchorClick = false;
@@ -634,6 +636,7 @@ struct SVGPreviewView: NSViewRepresentable {
             selectedIndices = idx >= 0 ? [idx] : [];
             wandMode = false;
             selectedAnchorSet.clear();   // different shape → anchors no longer apply
+            anchorNearest = null;
             if (idx < 0) clearLasso();
             rebuildPoints();
         }
@@ -649,6 +652,24 @@ struct SVGPreviewView: NSViewRepresentable {
             else selectedAnchorSet.add(i);
             reportAnchors();
             rebuildPoints();
+        }
+
+        // Distance from each anchor to its closest neighbor (user units), so a
+        // dot's click target can grow into surrounding empty space. Cached and
+        // only recomputed when the anchor set changes, not on every pan/zoom.
+        function nearestNeighborDistances(anchors) {
+            const n = anchors.length;
+            const best = new Array(n).fill(Infinity);
+            for (let i = 0; i < n; i++) {
+                for (let j = i + 1; j < n; j++) {
+                    const dx = anchors[i][0] - anchors[j][0];
+                    const dy = anchors[i][1] - anchors[j][1];
+                    const d2 = dx * dx + dy * dy;
+                    if (d2 < best[i]) best[i] = d2;
+                    if (d2 < best[j]) best[j] = d2;
+                }
+            }
+            return best.map(Math.sqrt);   // Infinity (lone anchor) stays Infinity
         }
 
         function drawMarquee(x0, y0, x1, y1) {
@@ -815,19 +836,37 @@ struct SVGPreviewView: NSViewRepresentable {
             if (tool === 'anchor' && selectedIndices.length === 1) {
                 g.setAttribute('pointer-events', 'auto');
                 anchorCircles = [];
+                if (!anchorNearest || anchorNearest.length !== out.anchors.length) {
+                    anchorNearest = nearestNeighborDistances(out.anchors);
+                }
+                const visR = 4 / scale;        // constant on-screen dot size
+                const maxHitR = 16 / scale;    // generous target for isolated dots
                 out.anchors.forEach((a, i) => {
-                    const c = document.createElementNS(SVGNS, 'circle');
-                    c.setAttribute('cx', a[0]);
-                    c.setAttribute('cy', a[1]);
-                    c.setAttribute('r', 4 / scale);
                     const sel = selectedAnchorSet.has(i);
-                    c.setAttribute('fill', sel ? '#30d158' : '#ff3b30');
-                    c.setAttribute('stroke', '#fff');
-                    c.setAttribute('stroke-width', (sel ? 1.5 : 1) / scale);
-                    c.style.cursor = 'pointer';
-                    c.addEventListener('click', ev => { ev.stopPropagation(); toggleAnchor(i); });
-                    g.appendChild(c);
-                    anchorCircles.push({ i, el: c });
+                    // Invisible hit target grows into empty space but never past
+                    // half the distance to the nearest dot, so neighbors stay
+                    // individually clickable. Always at least the visible dot.
+                    const hitR = Math.max(visR, Math.min(maxHitR, anchorNearest[i] / 2));
+                    const hit = document.createElementNS(SVGNS, 'circle');
+                    hit.setAttribute('cx', a[0]);
+                    hit.setAttribute('cy', a[1]);
+                    hit.setAttribute('r', hitR);
+                    hit.setAttribute('fill', 'transparent');
+                    hit.setAttribute('pointer-events', 'all');
+                    hit.style.cursor = 'pointer';
+                    hit.addEventListener('click', ev => { ev.stopPropagation(); toggleAnchor(i); });
+                    // Visible dot sits on top but ignores clicks; the hit area handles them.
+                    const dot = document.createElementNS(SVGNS, 'circle');
+                    dot.setAttribute('cx', a[0]);
+                    dot.setAttribute('cy', a[1]);
+                    dot.setAttribute('r', visR);
+                    dot.setAttribute('fill', sel ? '#30d158' : '#ff3b30');
+                    dot.setAttribute('stroke', '#fff');
+                    dot.setAttribute('stroke-width', (sel ? 1.5 : 1) / scale);
+                    dot.setAttribute('pointer-events', 'none');
+                    g.appendChild(hit);
+                    g.appendChild(dot);
+                    anchorCircles.push({ i, el: dot });
                 });
                 s.appendChild(g);
                 return;
