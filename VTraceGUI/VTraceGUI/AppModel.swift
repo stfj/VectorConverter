@@ -122,6 +122,9 @@ final class AppModel {
     private var upscaleTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
     private var postProcessDebounceTask: Task<Void, Never>?
+    /// The in-flight off-main post-process; cancelled when a newer one starts so
+    /// superseded heavy runs stop instead of stacking up across cores.
+    private var postProcessWork: Task<SVGSimplifier.Result?, Never>?
     private var generation = 0
     /// Staleness for the upscale pipeline only; `generation` also moves on
     /// trace/post-process changes, which shouldn't orphan a finishing upscale.
@@ -571,15 +574,21 @@ final class AppModel {
     /// Transforms applied to vtracer's raw SVG before it reaches the preview
     /// and export. Runs off the main actor; results are dropped if stale.
     private func applyPostProcess(to raw: String, generation gen: Int, conversionStart: Date?) async {
+        // Stop any earlier computation that this one supersedes.
+        postProcessWork?.cancel()
+        isConverting = true
         let simplify = simplification
         let overrides = pathOverrides
         let deleted = deletedPaths
         let edited = editedGeometry
-        let result = await Task.detached(priority: .userInitiated) {
+        let work = Task.detached(priority: .userInitiated) {
             SVGSimplifier.process(raw, settings: simplify, overrides: overrides,
                                   deleted: deleted, editedGeometry: edited)
-        }.value
-        guard gen == generation else { return }
+        }
+        postProcessWork = work
+        let result = await work.value
+        // nil → this run was cancelled by a newer one, which owns the UI state.
+        guard let result, gen == generation else { return }
         svgText = result.svg
         pathCount = result.pathCount
         rawPointCount = result.inputPointCount

@@ -54,11 +54,15 @@ nonisolated enum SVGSimplifier {
     /// replace the global ones for that shape only. Paths in `deleted` are
     /// emptied (`d=""`) rather than removed, so indices stay stable for
     /// selection; exports strip the placeholders.
+    /// Returns nil if the surrounding `Task` was cancelled (a newer post-process
+    /// superseded this one) so heavy traces don't keep burning CPU after they
+    /// no longer matter.
     static func process(_ svg: String, settings: SimplificationSettings,
                         overrides: [Int: SimplificationSettings] = [:],
                         deleted: Set<Int> = [],
-                        editedGeometry: [Int: String] = [:]) -> Result {
+                        editedGeometry: [Int: String] = [:]) -> Result? {
         let (svg, inputColors, outputColors) = mergeFills(in: svg, budget: settings.colorBudget)
+        if Task.isCancelled { return nil }
         let ns = svg as NSString
         let regex = try! NSRegularExpression(pattern: "d=\"([^\"]*)\"")
         let matches = regex.matches(in: svg, range: NSRange(location: 0, length: ns.length))
@@ -72,6 +76,7 @@ nonisolated enum SVGSimplifier {
         var outputNodes = 0
 
         for match in matches {
+            if Task.isCancelled { return nil }
             let index = pathIndex
             let effective = overrides[index] ?? settings
             let isDeleted = deleted.contains(index)
@@ -127,6 +132,43 @@ nonisolated enum SVGSimplifier {
 
     // MARK: - Color merging
 
+    private struct ColorCluster {
+        var r: Double, g: Double, b: Double
+        var weight: Double
+        var members: [String]
+    }
+
+    /// Largest cluster count fed to the O(n³) agglomerative pass. Above this we
+    /// pre-collapse near-identical colors on a grid so reducing colors on a
+    /// many-colored (e.g. upscaled) trace stays responsive.
+    private static let maxClusterColors = 256
+
+    /// Collapses clusters whose colors fall in the same coarsening cell until at
+    /// most `target` remain. Cheap (a few hash passes) and only merges colors
+    /// that are already nearly identical.
+    private static func coarsen(_ clusters: [ColorCluster], to target: Int) -> [ColorCluster] {
+        var current = clusters
+        var step = 4
+        while current.count > target && step <= 128 {
+            var buckets: [Int: ColorCluster] = [:]
+            for c in current {
+                let key = (Int(c.r) / step) << 16 | (Int(c.g) / step) << 8 | (Int(c.b) / step)
+                if let e = buckets[key] {
+                    let w = e.weight + c.weight
+                    buckets[key] = ColorCluster(r: (e.r * e.weight + c.r * c.weight) / w,
+                                                g: (e.g * e.weight + c.g * c.weight) / w,
+                                                b: (e.b * e.weight + c.b * c.weight) / w,
+                                                weight: w, members: e.members + c.members)
+                } else {
+                    buckets[key] = c
+                }
+            }
+            current = Array(buckets.values)
+            step *= 2
+        }
+        return current
+    }
+
     /// Rewrites fill colors so at most `budget` distinct colors remain,
     /// agglomeratively merging the closest pair (weighted by how many paths
     /// use each color) until the budget is met.
@@ -145,18 +187,19 @@ nonisolated enum SVGSimplifier {
         let total = order.count
         guard let budget, budget < total else { return (svg, total, total) }
 
-        struct Cluster {
-            var r: Double, g: Double, b: Double
-            var weight: Double
-            var members: [String]
-        }
-        var clusters: [Cluster] = order.map { hex in
+        var clusters: [ColorCluster] = order.map { hex in
             let v = UInt32(hex.dropFirst(), radix: 16) ?? 0
-            return Cluster(r: Double((v >> 16) & 255), g: Double((v >> 8) & 255),
-                           b: Double(v & 255), weight: Double(counts[hex] ?? 1),
-                           members: [hex])
+            return ColorCluster(r: Double((v >> 16) & 255), g: Double((v >> 8) & 255),
+                                b: Double(v & 255), weight: Double(counts[hex] ?? 1),
+                                members: [hex])
+        }
+        // Keep the agglomerative pass bounded; never coarsen below the request.
+        let ceiling = max(budget, maxClusterColors)
+        if clusters.count > ceiling {
+            clusters = coarsen(clusters, to: ceiling)
         }
         while clusters.count > budget {
+            if Task.isCancelled { break }
             var bestI = 0, bestJ = 1
             var bestDist = Double.infinity
             for i in 0..<(clusters.count - 1) {
@@ -174,10 +217,10 @@ nonisolated enum SVGSimplifier {
             }
             let a = clusters[bestI], b = clusters[bestJ]
             let w = a.weight + b.weight
-            clusters[bestI] = Cluster(r: (a.r * a.weight + b.r * b.weight) / w,
-                                      g: (a.g * a.weight + b.g * b.weight) / w,
-                                      b: (a.b * a.weight + b.b * b.weight) / w,
-                                      weight: w, members: a.members + b.members)
+            clusters[bestI] = ColorCluster(r: (a.r * a.weight + b.r * b.weight) / w,
+                                           g: (a.g * a.weight + b.g * b.weight) / w,
+                                           b: (a.b * a.weight + b.b * b.weight) / w,
+                                           weight: w, members: a.members + b.members)
             clusters.remove(at: bestJ)
         }
 
@@ -461,6 +504,10 @@ nonisolated enum SVGSimplifier {
     // MARK: - Simplification
 
     private static let resampleSpacing = 1.5
+    /// Cap on resample points per subpath. Without it, a large (e.g. 4×-upscaled)
+    /// path's perimeter / 1.5 spacing yields tens of thousands of points and the
+    /// curve fitter bogs down; we widen the spacing instead.
+    private static let maxResamplePoints = 1600
 
     private static func simplifySubpath(_ sp: SubPath, settings: SimplificationSettings) -> SubPath {
         var pts = flatten(sp)
@@ -470,9 +517,13 @@ nonisolated enum SVGSimplifier {
         guard pts.count >= 3 else { return sp }
 
         // Uniform spacing makes the smoothing window and length-proportional
-        // budget allocation behave predictably.
+        // budget allocation behave predictably. Widen it on very large paths so
+        // the point count (and fitting cost) stays bounded.
+        var spacing = resampleSpacing
         if settings.smoothing > 0 || settings.nodeBudget != nil {
-            pts = resample(pts, spacing: resampleSpacing, closed: sp.closed)
+            let perimeter = polylineLength(pts, closed: sp.closed)
+            spacing = max(resampleSpacing, perimeter / Double(maxResamplePoints))
+            pts = resample(pts, spacing: spacing, closed: sp.closed)
             guard pts.count >= 3 else { return sp }
         }
 
@@ -500,7 +551,7 @@ nonisolated enum SVGSimplifier {
             var loop = pts
             if settings.smoothing > 0 {
                 loop = smoothed(loop, radius: settings.smoothing,
-                                spacing: resampleSpacing, closed: true)
+                                spacing: spacing, closed: true)
             }
             loop.append(loop[0])
             let seamTangent = normalize(sub(loop[1], loop[loop.count - 2]))
@@ -535,7 +586,7 @@ nonisolated enum SVGSimplifier {
                 // Smooth piece interiors; corner endpoints stay pinned.
                 pieces = pieces.map {
                     smoothed($0, radius: settings.smoothing,
-                             spacing: resampleSpacing, closed: false)
+                             spacing: spacing, closed: false)
                 }
             }
             let allocations = allocate(segmentBudget, among: pieces)
@@ -553,6 +604,14 @@ nonisolated enum SVGSimplifier {
         }
         guard !segments.isEmpty else { return sp }
         return SubPath(start: startPoint, segments: segments, closed: sp.closed)
+    }
+
+    private static func polylineLength(_ pts: [CGPoint], closed: Bool) -> Double {
+        guard pts.count > 1 else { return 0 }
+        var total = 0.0
+        for i in 1..<pts.count { total += distance(pts[i - 1], pts[i]) }
+        if closed { total += distance(pts[pts.count - 1], pts[0]) }
+        return total
     }
 
     /// Resample a polyline at uniform arc-length spacing.
