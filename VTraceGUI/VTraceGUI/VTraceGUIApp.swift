@@ -13,13 +13,16 @@ struct VTraceGUIApp: App {
     @State private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup {
+        // A single `Window` (not `WindowGroup`): opening a .vtrace from Finder
+        // can't spawn a second window — the delegate just loads the file into
+        // this one window's model.
+        Window("VTraceGUI", id: "main") {
             ContentView(model: model)
                 .frame(minWidth: 820, minHeight: 520)
                 .onAppear {
                     // Finder double-clicks / "Open With" arrive via the app
                     // delegate; route any (including one buffered before the
-                    // window existed) into this window's model.
+                    // window existed) into the model.
                     appDelegate.registerOpenHandler { url in
                         model.loadDesign(from: url)
                     }
