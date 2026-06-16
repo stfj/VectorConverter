@@ -5,7 +5,7 @@
 
 import Foundation
 
-enum UpscaleScale: Int, CaseIterable, Identifiable {
+enum UpscaleScale: Int, CaseIterable, Identifiable, Codable {
     case x2 = 2
     case x3 = 3
     case x4 = 4
@@ -15,7 +15,7 @@ enum UpscaleScale: Int, CaseIterable, Identifiable {
 
 /// AI upscaling applied to the source image before vtracer sees it.
 /// Runs the bundled upscayl-ncnn engine with Upscayl's Digital Art model.
-struct UpscaleSettings: Equatable {
+struct UpscaleSettings: Equatable, Codable {
     var enabled = true
     var scale: UpscaleScale = .x4
     /// Upscayl's "Double Upscayl": feed the upscaled image through the model

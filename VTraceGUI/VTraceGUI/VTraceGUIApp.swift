@@ -18,10 +18,21 @@ struct VTraceGUIApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Open…") { model.openImagePanel() }
+                Button("Open Image…") { model.openImagePanel() }
                     .keyboardShortcut("o")
-                Button("Export SVG…") { model.exportSVG() }
+                Button("Open Design…") { model.openDesignPanel() }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+            }
+            CommandGroup(replacing: .saveItem) {
+                Button("Save Design…") { model.saveDesign() }
                     .keyboardShortcut("s")
+                    .disabled(!model.canSaveDesign)
+                Button("Save Design As…") { model.saveDesignAs() }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
+                    .disabled(!model.canSaveDesign)
+                Divider()
+                Button("Export SVG…") { model.exportSVG() }
+                    .keyboardShortcut("e")
                     .disabled(model.svgText == nil)
             }
             CommandGroup(replacing: .undoRedo) {

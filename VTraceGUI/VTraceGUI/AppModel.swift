@@ -18,20 +18,20 @@ enum PreviewTool {
 @Observable
 final class AppModel {
     var settings = VTracerSettings() {
-        didSet { if settings != oldValue { scheduleConversion() } }
+        didSet { if settings != oldValue, !suppressPipeline { scheduleConversion() } }
     }
 
     /// AI upscaling (Upscayl, Digital Art model) applied to the source image
     /// before tracing; re-runs from the cached original on any change.
     var upscale = UpscaleSettings() {
-        didSet { if upscale != oldValue { prepareInput() } }
+        didSet { if upscale != oldValue, !suppressPipeline { prepareInput() } }
     }
 
     /// Post-processing applied on top of vtracer's output; re-runs on the
     /// cached raw SVG without invoking the CLI again.
     var simplification = SimplificationSettings() {
         didSet {
-            if simplification != oldValue {
+            if simplification != oldValue, !suppressPipeline {
                 // Edited shapes re-simplify from their baked geometry, so point
                 // edits persist; only the live anchor selection (indices into the
                 // about-to-change display) is stale.
@@ -117,6 +117,13 @@ final class AppModel {
     private var sourceName = "export"
     private var hasImage = false
     private var rawSVG: String?
+    /// While true, the `settings`/`upscale`/`simplification` observers don't
+    /// kick off the pipeline — used while restoring a saved design so a single
+    /// post-process renders it instead of a re-trace per restored knob.
+    private var suppressPipeline = false
+    /// The `.vtrace` file backing the current design, if it came from / was
+    /// saved to disk. ⌘S writes here; a new image clears it (untitled again).
+    private(set) var currentDesignURL: URL?
     private let runner = VTracerRunner()
     private let upscaler = UpscaylRunner()
     private var upscaleTask: Task<Void, Never>?
@@ -345,6 +352,7 @@ final class AppModel {
         editedGeometry = [:]
         deletedPaths = []
         undoStack = []
+        currentDesignURL = nil
         imageVersion += 1
         prepareInput()
     }
@@ -425,6 +433,140 @@ final class AppModel {
             with: "",
             options: .regularExpression
         )
+    }
+
+    // MARK: - Design files (save / load a .vtrace for later tweaking)
+
+    /// A design can be saved once there's a trace to preserve.
+    var canSaveDesign: Bool { svgText != nil && hasImage }
+
+    /// ⌘S: write back to the open file, or prompt if this design is untitled.
+    func saveDesign() {
+        if let url = currentDesignURL {
+            writeDesign(to: url)
+        } else {
+            saveDesignAs()
+        }
+    }
+
+    /// Always prompts for a location (⇧⌘S, or first save of an untitled design).
+    func saveDesignAs() {
+        guard canSaveDesign else { return }
+        let panel = NSSavePanel()
+        if let type = VTraceDocument.utType { panel.allowedContentTypes = [type] }
+        panel.nameFieldStringValue = sourceName + "." + VTraceDocument.fileExtension
+        if panel.runModal() == .OK, let url = panel.url {
+            writeDesign(to: url)
+            currentDesignURL = url
+        }
+    }
+
+    private func writeDesign(to url: URL) {
+        guard let document = buildDocument() else { return }
+        do {
+            try document.encoded().write(to: url, options: .atomic)
+            errorMessage = nil
+        } catch {
+            errorMessage = "Couldn't save design: \(error.localizedDescription)"
+        }
+    }
+
+    /// Snapshots everything needed to reopen and keep tweaking: the source +
+    /// traced PNGs, vtracer's raw SVG, and all settings/edits.
+    private func buildDocument() -> VTraceDocument? {
+        guard let rawSVG, hasImage,
+              let originalData = try? Data(contentsOf: originalPNGURL),
+              let inputData = try? Data(contentsOf: inputPNGURL) else { return nil }
+        let original = originalPixelSize ?? .zero
+        let input = sourcePixelSize ?? original
+        return VTraceDocument(
+            sourceName: sourceName,
+            originalPNG: originalData,
+            inputPNG: inputData,
+            rawSVG: rawSVG,
+            settings: settings,
+            upscale: upscale,
+            simplification: simplification,
+            pathOverrides: pathOverrides,
+            editedGeometry: editedGeometry,
+            deletedPaths: deletedPaths.sorted(),
+            originalPixelWidth: Int(original.width),
+            originalPixelHeight: Int(original.height),
+            inputPixelWidth: Int(input.width),
+            inputPixelHeight: Int(input.height)
+        )
+    }
+
+    func openDesignPanel() {
+        let panel = NSOpenPanel()
+        if let type = VTraceDocument.utType { panel.allowedContentTypes = [type] }
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            loadDesign(from: url)
+        }
+    }
+
+    /// Restores a saved design and renders it — post-process only, so it loads
+    /// instantly with no re-trace or re-upscale, and the per-shape edits land
+    /// on the exact path indices they were made against. The source image is
+    /// restored too, so changing vtracer/upscale settings still works.
+    func loadDesign(from url: URL) {
+        let document: VTraceDocument
+        do {
+            document = try VTraceDocument.decoded(from: Data(contentsOf: url))
+        } catch {
+            errorMessage = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"
+            return
+        }
+
+        // Stop anything in flight; the loaded design owns the UI state now.
+        upscaleTask?.cancel()
+        debounceTask?.cancel()
+        postProcessDebounceTask?.cancel()
+        postProcessWork?.cancel()
+        Task { [upscaler] in await upscaler.cancel() }
+
+        do {
+            try document.originalPNG.write(to: originalPNGURL)
+            try document.inputPNG.write(to: inputPNGURL)
+        } catch {
+            errorMessage = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"
+            return
+        }
+
+        // Restore the knobs without retriggering the pipeline; one explicit
+        // post-process below renders the whole thing.
+        suppressPipeline = true
+        settings = document.settings
+        upscale = document.upscale
+        simplification = document.simplification
+        suppressPipeline = false
+
+        rawSVG = document.rawSVG
+        pathOverrides = document.pathOverrides
+        editedGeometry = document.editedGeometry
+        deletedPaths = Set(document.deletedPaths)
+        undoStack = []
+        selectedPathIndex = nil
+        lassoSelection = []
+        selectedAnchors = []
+
+        sourceName = document.sourceName
+        originalPixelSize = CGSize(width: document.originalPixelWidth, height: document.originalPixelHeight)
+        sourcePixelSize = CGSize(width: document.inputPixelWidth, height: document.inputPixelHeight)
+        hasImage = true
+        isUpscaling = false
+        upscaleProgress = 0
+        currentDesignURL = url
+        errorMessage = nil
+        imageVersion += 1
+
+        // Re-derive the preview from the restored raw SVG (no CLI, no upscale).
+        generation += 1
+        let gen = generation
+        let raw = document.rawSVG
+        isConverting = true
+        Task { await applyPostProcess(to: raw, generation: gen, conversionStart: nil) }
     }
 
     // MARK: - Per-shape overrides

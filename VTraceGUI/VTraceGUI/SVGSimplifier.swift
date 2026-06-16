@@ -11,7 +11,7 @@
 import Foundation
 import CoreGraphics
 
-nonisolated struct SimplificationSettings: Equatable, Sendable {
+nonisolated struct SimplificationSettings: Equatable, Sendable, Codable {
     /// Max fitting error in px. 0 disables error-driven simplification.
     var tolerance: Double = 0
     /// Vertices whose direction changes by at least this many degrees are

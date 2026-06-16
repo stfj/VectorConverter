@@ -32,7 +32,7 @@ struct ContentView: View {
                     Label("Export SVG…", systemImage: "square.and.arrow.down")
                 }
                 .disabled(model.svgText == nil)
-                .help("Export the traced SVG (⌘S)")
+                .help("Export the traced SVG (⌘E)")
             }
         }
         .onDrop(of: [.fileURL, .image], isTargeted: $isDropTargeted) { providers in
@@ -90,8 +90,13 @@ struct ContentView: View {
                 .font(.title3.weight(.medium))
             Text("paste with ⌘V, or")
                 .foregroundStyle(.secondary)
-            Button("Choose Image…") {
-                model.openImagePanel()
+            HStack(spacing: 8) {
+                Button("Choose Image…") {
+                    model.openImagePanel()
+                }
+                Button("Open Design…") {
+                    model.openDesignPanel()
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

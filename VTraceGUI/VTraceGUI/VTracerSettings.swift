@@ -5,21 +5,21 @@
 
 import Foundation
 
-enum ClusteringMode: String, CaseIterable, Identifiable {
+enum ClusteringMode: String, CaseIterable, Identifiable, Codable {
     case bw = "B/W"
     case color = "Color"
     var id: String { rawValue }
     var cliValue: String { self == .color ? "color" : "bw" }
 }
 
-enum HierarchicalMode: String, CaseIterable, Identifiable {
+enum HierarchicalMode: String, CaseIterable, Identifiable, Codable {
     case cutout = "Cutout"
     case stacked = "Stacked"
     var id: String { rawValue }
     var cliValue: String { rawValue.lowercased() }
 }
 
-enum CurveFittingMode: String, CaseIterable, Identifiable {
+enum CurveFittingMode: String, CaseIterable, Identifiable, Codable {
     case pixel = "Pixel"
     case polygon = "Polygon"
     case spline = "Spline"
@@ -31,7 +31,7 @@ enum CurveFittingMode: String, CaseIterable, Identifiable {
 /// The CLI applies the same internal transforms the webapp does
 /// (speckle area = value², precision loss = 8 − value, degrees → radians),
 /// so these values map 1:1 onto CLI arguments.
-struct VTracerSettings: Equatable {
+struct VTracerSettings: Equatable, Codable {
     var clustering: ClusteringMode = .color
     var hierarchical: HierarchicalMode = .stacked
     var filterSpeckle: Double = 4        // 1...16 px
