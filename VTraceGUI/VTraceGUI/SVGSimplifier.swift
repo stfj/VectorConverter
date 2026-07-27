@@ -46,7 +46,13 @@ nonisolated enum SVGSimplifier {
         var outputNodeCount: Int
         /// Distinct fill colors in the raw trace (before any merging).
         var inputColorCount: Int
-        /// Distinct fill colors after merging.
+        /// Raw colors and their path-use counts, in first-appearance order.
+        var inputColors: [PaletteColor]
+        /// Colors available to the manual grouping UI after the automatic
+        /// OkLAB budget has been applied, but before manual groups are applied.
+        var automaticColors: [PaletteColor]
+        var automaticColorCount: Int
+        /// Distinct fill colors after automatic reduction and manual grouping.
         var outputColorCount: Int
     }
 
@@ -60,8 +66,16 @@ nonisolated enum SVGSimplifier {
     static func process(_ svg: String, settings: SimplificationSettings,
                         overrides: [Int: SimplificationSettings] = [:],
                         deleted: Set<Int> = [],
-                        editedGeometry: [Int: String] = [:]) -> Result? {
-        let (svg, inputColors, outputColors) = mergeFills(in: svg, budget: settings.colorBudget)
+                        editedGeometry: [Int: String] = [:],
+                        manualColors: [String: String] = [:]) -> Result? {
+        let inputColors = palette(in: svg)
+        let (automaticallyReduced, _, _) = mergeFills(
+            in: svg,
+            budget: settings.colorBudget
+        )
+        let automaticColors = palette(in: automaticallyReduced)
+        let svg = applyingManualColors(manualColors, to: automaticallyReduced)
+        let outputColors = palette(in: svg).count
         if Task.isCancelled { return nil }
         let ns = svg as NSString
         let regex = try! NSRegularExpression(pattern: "d=\"([^\"]*)\"")
@@ -127,15 +141,136 @@ nonisolated enum SVGSimplifier {
         return Result(svg: output, pathCount: pathIndex,
                       inputPointCount: inputPoints, outputPointCount: outputPoints,
                       outputNodeCount: outputNodes,
-                      inputColorCount: inputColors, outputColorCount: outputColors)
+                      inputColorCount: inputColors.count, inputColors: inputColors,
+                      automaticColors: automaticColors,
+                      automaticColorCount: automaticColors.count,
+                      outputColorCount: outputColors)
     }
 
     // MARK: - Color merging
 
+    private static func palette(in svg: String) -> [PaletteColor] {
+        let ns = svg as NSString
+        let regex = try! NSRegularExpression(pattern: "fill=\"(#[0-9A-Fa-f]{6})\"")
+        let matches = regex.matches(
+            in: svg,
+            range: NSRange(location: 0, length: ns.length)
+        )
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for match in matches {
+            let hex = ns.substring(with: match.range(at: 1)).uppercased()
+            if counts[hex] == nil { order.append(hex) }
+            counts[hex, default: 0] += 1
+        }
+        return order.map { PaletteColor(hex: $0, count: counts[$0] ?? 0) }
+    }
+
+    /// Applies user-defined groups to the already OkLAB-reduced palette. Rules
+    /// stay compact and backward-compatible: both keys and values are hex
+    /// colors, but the keys now correspond to the palette visible in the UI.
+    private static func applyingManualColors(_ mapping: [String: String],
+                                             to svg: String) -> String {
+        guard !mapping.isEmpty else { return svg }
+        let ns = svg as NSString
+        let regex = try! NSRegularExpression(pattern: "fill=\"(#[0-9A-Fa-f]{6})\"")
+        let matches = regex.matches(
+            in: svg,
+            range: NSRange(location: 0, length: ns.length)
+        )
+        var output = ""
+        output.reserveCapacity(svg.count)
+        var cursor = 0
+        for match in matches {
+            let full = match.range
+            output += ns.substring(with: NSRange(
+                location: cursor,
+                length: full.location - cursor
+            ))
+            cursor = full.location + full.length
+            let source = ns.substring(with: match.range(at: 1)).uppercased()
+            let replacement = mapping[source].flatMap(PaletteHex.normalize) ?? source
+            output += "fill=\"\(replacement)\""
+        }
+        output += ns.substring(from: cursor)
+        return output
+    }
+
+    struct OKLab {
+        let l: Double
+        let a: Double
+        let b: Double
+    }
+
     private struct ColorCluster {
-        var r: Double, g: Double, b: Double
-        var weight: Double
-        var members: [String]
+        let r: Double, g: Double, b: Double
+        let okLab: OKLab
+        let weight: Double
+        let members: [String]
+
+        init(r: Double, g: Double, b: Double, okLab: OKLab? = nil,
+             weight: Double, members: [String]) {
+            self.r = r
+            self.g = g
+            self.b = b
+            self.okLab = okLab ?? SVGSimplifier.okLab(red: r, green: g, blue: b)
+            self.weight = weight
+            self.members = members
+        }
+
+        func merged(with other: ColorCluster) -> ColorCluster {
+            let combinedWeight = weight + other.weight
+            return ColorCluster(
+                r: (r * weight + other.r * other.weight) / combinedWeight,
+                g: (g * weight + other.g * other.weight) / combinedWeight,
+                b: (b * weight + other.b * other.weight) / combinedWeight,
+                okLab: OKLab(
+                    l: (okLab.l * weight + other.okLab.l * other.weight) / combinedWeight,
+                    a: (okLab.a * weight + other.okLab.a * other.weight) / combinedWeight,
+                    b: (okLab.b * weight + other.okLab.b * other.weight) / combinedWeight
+                ),
+                weight: combinedWeight,
+                members: members + other.members
+            )
+        }
+    }
+
+    private struct OKLabCell: Hashable {
+        let l: Int
+        let a: Int
+        let b: Int
+    }
+
+    /// Converts an sRGB color expressed as 0...255 components to OkLAB.
+    ///
+    /// OkLAB operates on linear-light RGB, so applying the sRGB transfer
+    /// function before the matrix transforms is essential. The resulting
+    /// components use the conventional ranges where L is approximately 0...1.
+    static func okLab(red: Double, green: Double, blue: Double) -> OKLab {
+        func linearSRGB(_ component: Double) -> Double {
+            let encoded = component / 255
+            return encoded <= 0.04045
+                ? encoded / 12.92
+                : pow((encoded + 0.055) / 1.055, 2.4)
+        }
+
+        let r = linearSRGB(red)
+        let g = linearSRGB(green)
+        let b = linearSRGB(blue)
+
+        let l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
+        let m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
+        let s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
+
+        let lRoot = cbrt(l)
+        let mRoot = cbrt(m)
+        let sRoot = cbrt(s)
+
+        return OKLab(
+            l: 0.2104542553 * lRoot + 0.7936177850 * mRoot - 0.0040720468 * sRoot,
+            a: 1.9779984951 * lRoot - 2.4285922050 * mRoot + 0.4505937099 * sRoot,
+            b: 0.0259040371 * lRoot + 0.7827717662 * mRoot - 0.8086757660 * sRoot
+        )
     }
 
     /// Largest cluster count fed to the O(n³) agglomerative pass. Above this we
@@ -150,15 +285,16 @@ nonisolated enum SVGSimplifier {
         var current = clusters
         var step = 4
         while current.count > target && step <= 128 {
-            var buckets: [Int: ColorCluster] = [:]
+            let cellSize = Double(step) / 255
+            var buckets: [OKLabCell: ColorCluster] = [:]
             for c in current {
-                let key = (Int(c.r) / step) << 16 | (Int(c.g) / step) << 8 | (Int(c.b) / step)
+                let key = OKLabCell(
+                    l: Int((c.okLab.l / cellSize).rounded()),
+                    a: Int((c.okLab.a / cellSize).rounded()),
+                    b: Int((c.okLab.b / cellSize).rounded())
+                )
                 if let e = buckets[key] {
-                    let w = e.weight + c.weight
-                    buckets[key] = ColorCluster(r: (e.r * e.weight + c.r * c.weight) / w,
-                                                g: (e.g * e.weight + c.g * c.weight) / w,
-                                                b: (e.b * e.weight + c.b * c.weight) / w,
-                                                weight: w, members: e.members + c.members)
+                    buckets[key] = e.merged(with: c)
                 } else {
                     buckets[key] = c
                 }
@@ -204,10 +340,10 @@ nonisolated enum SVGSimplifier {
             var bestDist = Double.infinity
             for i in 0..<(clusters.count - 1) {
                 for j in (i + 1)..<clusters.count {
-                    let dr = clusters[i].r - clusters[j].r
-                    let dg = clusters[i].g - clusters[j].g
-                    let db = clusters[i].b - clusters[j].b
-                    let dist = dr * dr + dg * dg + db * db
+                    let dl = clusters[i].okLab.l - clusters[j].okLab.l
+                    let da = clusters[i].okLab.a - clusters[j].okLab.a
+                    let db = clusters[i].okLab.b - clusters[j].okLab.b
+                    let dist = dl * dl + da * da + db * db
                     if dist < bestDist {
                         bestDist = dist
                         bestI = i
@@ -216,11 +352,7 @@ nonisolated enum SVGSimplifier {
                 }
             }
             let a = clusters[bestI], b = clusters[bestJ]
-            let w = a.weight + b.weight
-            clusters[bestI] = ColorCluster(r: (a.r * a.weight + b.r * b.weight) / w,
-                                           g: (a.g * a.weight + b.g * b.weight) / w,
-                                           b: (a.b * a.weight + b.b * b.weight) / w,
-                                           weight: w, members: a.members + b.members)
+            clusters[bestI] = a.merged(with: b)
             clusters.remove(at: bestJ)
         }
 

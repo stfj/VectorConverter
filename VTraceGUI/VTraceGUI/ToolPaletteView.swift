@@ -9,6 +9,8 @@ import SwiftUI
 
 struct ToolPaletteView: View {
     @Bindable var model: AppModel
+    @State private var hoveredTool: ToolTooltip?
+    @State private var visibleTooltip: ToolTooltip?
 
     private let columns = [
         GridItem(.fixed(28), spacing: 4),
@@ -36,18 +38,21 @@ struct ToolPaletteView: View {
             LazyVGrid(columns: columns, spacing: 4) {
                 toolButton(.addBrush, label: "Add Brush", shortcut: "B",
                            symbol: "paintbrush.pointed.fill", badge: "plus.circle.fill")
-                toolButton(.subtractBrush, label: "Subtract Brush", shortcut: "E",
+                toolButton(.subtractBrush, label: "Remove Brush", shortcut: "B toggle / E / ⌥",
                            symbol: "paintbrush.pointed.fill", badge: "minus.circle.fill")
             }
 
             VStack(spacing: 2) {
                 ZStack {
                     Circle()
-                        .fill(model.previewTool == .subtractBrush
+                        .fill((model.previewTool == .subtractBrush ||
+                               (model.previewTool == .addBrush && model.altDown))
                               ? Color.red.opacity(0.18)
                               : Color.accentColor.opacity(0.18))
                     Circle()
-                        .stroke(model.previewTool == .subtractBrush ? Color.red : Color.accentColor,
+                        .stroke((model.previewTool == .subtractBrush ||
+                                 (model.previewTool == .addBrush && model.altDown))
+                                ? Color.red : Color.accentColor,
                                 lineWidth: 1)
                 }
                 .frame(width: 18, height: 18)
@@ -70,6 +75,23 @@ struct ToolPaletteView: View {
         .padding(.vertical, 8)
         .frame(width: 68)
         .background(.bar)
+        .task(id: hoveredTool) {
+            visibleTooltip = nil
+            guard let hoveredTool else { return }
+
+            do {
+                try await Task.sleep(nanoseconds: 450_000_000)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled, self.hoveredTool == hoveredTool else { return }
+            visibleTooltip = hoveredTool
+        }
+        .onDisappear {
+            hoveredTool = nil
+            visibleTooltip = nil
+        }
     }
 
     private func toolButton(_ tool: PreviewTool,
@@ -78,7 +100,10 @@ struct ToolPaletteView: View {
                             symbol: String,
                             badge: String? = nil) -> some View {
         let isSelected = model.previewTool == tool
+        let tooltip = ToolTooltip(label: label, shortcut: shortcut)
         return Button {
+            hoveredTool = nil
+            visibleTooltip = nil
             model.selectTool(tool)
         } label: {
             ZStack {
@@ -99,11 +124,43 @@ struct ToolPaletteView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PaletteToolButtonStyle(isSelected: isSelected))
-        .help("\(label) (\(shortcut))")
+        .onHover { isHovering in
+            if isHovering {
+                visibleTooltip = nil
+                hoveredTool = tooltip
+            } else if hoveredTool == tooltip {
+                hoveredTool = nil
+                visibleTooltip = nil
+            }
+        }
+        .popover(
+            isPresented: Binding(
+                get: { visibleTooltip == tooltip },
+                set: { isPresented in
+                    if !isPresented, visibleTooltip == tooltip {
+                        visibleTooltip = nil
+                    }
+                }
+            ),
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .leading
+        ) {
+            Text("\(label) (\(shortcut))")
+                .font(.callout.weight(.medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .fixedSize()
+                .accessibilityHidden(true)
+        }
         .accessibilityLabel(label)
         .accessibilityHint("Keyboard shortcut \(shortcut)")
         .accessibilityValue(isSelected ? "Selected" : "")
     }
+}
+
+private struct ToolTooltip: Equatable {
+    let label: String
+    let shortcut: String
 }
 
 private struct PaletteToolButtonStyle: ButtonStyle {

@@ -15,6 +15,19 @@ import UniformTypeIdentifiers
 /// reach SwiftUI's onDrop. Intercept them here and hand them to the app instead.
 final class ImageDropWebView: WKWebView {
     var onImageDrop: ((NSPasteboard) -> Bool)?
+    var onKeyboardFocusChange: ((Bool) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onKeyboardFocusChange?(true) }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { onKeyboardFocusChange?(false) }
+        return resigned
+    }
 
     private func pasteboardHasImage(_ sender: NSDraggingInfo) -> Bool {
         let pasteboard = sender.draggingPasteboard
@@ -64,6 +77,9 @@ struct SVGPreviewView: NSViewRepresentable {
         webView.onImageDrop = { pasteboard in
             model.loadImage(fromPasteboard: pasteboard, fallbackName: "dropped-image")
         }
+        webView.onKeyboardFocusChange = { focused in
+            model.setPreviewKeyboardFocus(focused)
+        }
         let pageURL = model.workDirectory.appendingPathComponent("preview.html")
         try? Self.pageHTML.write(to: pageURL, atomically: true, encoding: .utf8)
         webView.loadFileURL(pageURL, allowingReadAccessTo: model.workDirectory)
@@ -82,13 +98,25 @@ struct SVGPreviewView: NSViewRepresentable {
         if coordinator.sentImageVersion != model.imageVersion {
             coordinator.sentImageVersion = model.imageVersion
             coordinator.sentSVG = nil
-            coordinator.run(webView, "setImage('input.png?v=\(model.imageVersion)')")
+            coordinator.sentPreviewRevision = model.previewRevision
+            coordinator.run(
+                webView,
+                "setImage('input.png?v=\(model.imageVersion)', \(model.previewRevision))"
+            )
         }
         if let svg = model.svgText, coordinator.sentSVG != svg {
             coordinator.sentSVG = svg
+            // setSVG replaces the DOM, so any immediate deletion mask must be
+            // resent even though the model's deleted-index set did not change.
+            coordinator.sentDeleted = []
             if let data = try? JSONEncoder().encode(svg), let json = String(data: data, encoding: .utf8) {
-                coordinator.run(webView, "setSVG(\(json))")
+                coordinator.sentPreviewRevision = model.previewRevision
+                coordinator.run(webView, "setSVG(\(json), \(model.previewRevision))")
             }
+        }
+        if coordinator.sentPreviewRevision != model.previewRevision {
+            coordinator.sentPreviewRevision = model.previewRevision
+            coordinator.run(webView, "setPreviewRevision(\(model.previewRevision))")
         }
         if coordinator.sentConverting != model.isConverting {
             coordinator.sentConverting = model.isConverting
@@ -120,6 +148,27 @@ struct SVGPreviewView: NSViewRepresentable {
             coordinator.sentBrushSize = model.brushSize
             coordinator.run(webView, "setBrushSize(\(model.brushSize))")
         }
+        if coordinator.sentBrushEnabled != model.brushInteractionEnabled {
+            coordinator.sentBrushEnabled = model.brushInteractionEnabled
+            coordinator.run(
+                webView,
+                "setBrushEnabled(\(model.brushInteractionEnabled))"
+            )
+        }
+        if coordinator.sentBrushFeedbackVersion != model.brushFeedbackVersion {
+            coordinator.sentBrushFeedbackVersion = model.brushFeedbackVersion
+            coordinator.run(webView, "clearBrushFeedback()")
+        }
+        if coordinator.sentHighlightedColorHex != model.highlightedColorHex {
+            coordinator.sentHighlightedColorHex = model.highlightedColorHex
+            if let hex = model.highlightedColorHex,
+               let data = try? JSONEncoder().encode(hex),
+               let json = String(data: data, encoding: .utf8) {
+                coordinator.run(webView, "setHighlightedColor(\(json))")
+            } else {
+                coordinator.run(webView, "setHighlightedColor(null)")
+            }
+        }
         if coordinator.sentSelection != model.selectedPathIndex {
             coordinator.sentSelection = model.selectedPathIndex
             coordinator.run(webView, "setSelected(\(model.selectedPathIndex ?? -1))")
@@ -147,6 +196,10 @@ struct SVGPreviewView: NSViewRepresentable {
         var sentAltDown = false
         var sentTool = PreviewTool.cursor
         var sentBrushSize = 0.0
+        var sentBrushEnabled = true
+        var sentBrushFeedbackVersion = 0
+        var sentHighlightedColorHex: String?
+        var sentPreviewRevision = 0
         var sentSelection: Int?
         var sentLasso: Set<Int> = []
         var sentDeleted: Set<Int> = []
@@ -174,24 +227,41 @@ struct SVGPreviewView: NSViewRepresentable {
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
             let model = model
-            if message.name == "pathClick", let index = message.body as? Int {
+            if message.name == "pathClick",
+               let payload = message.body as? [String: Any],
+               let index = number(payload["index"]).map(Int.init),
+               let revision = number(payload["previewRevision"]).map(Int.init) {
                 // The page already cleared its lasso; mirror that so the
                 // model sync doesn't echo a stale state back.
                 sentLasso = []
                 Task { @MainActor in
+                    guard revision == model.previewRevision,
+                          model.editingInteractionEnabled else { return }
                     model.selectPath(index >= 0 ? index : nil)
                 }
-            } else if message.name == "lassoSelect", let indices = message.body as? [Int] {
+            } else if message.name == "lassoSelect",
+                      let payload = message.body as? [String: Any],
+                      let values = payload["indices"] as? [Any],
+                      let revision = number(payload["previewRevision"]).map(Int.init) {
                 // Pre-set the sent state so updateNSView doesn't echo this
                 // selection straight back and clobber the page's lasso.
+                let indices = values.compactMap { number($0).map(Int.init) }
                 let set = Set(indices)
                 sentLasso = set
                 sentSelection = nil
                 Task { @MainActor in
+                    guard revision == model.previewRevision,
+                          model.editingInteractionEnabled else { return }
                     model.setLassoSelection(set)
                 }
-            } else if message.name == "anchorSelect", let indices = message.body as? [Int] {
+            } else if message.name == "anchorSelect",
+                      let payload = message.body as? [String: Any],
+                      let values = payload["indices"] as? [Any],
+                      let revision = number(payload["previewRevision"]).map(Int.init) {
+                let indices = values.compactMap { number($0).map(Int.init) }
                 Task { @MainActor in
+                    guard revision == model.previewRevision,
+                          model.editingInteractionEnabled else { return }
                     model.setSelectedAnchors(Set(indices))
                 }
             } else if message.name == "brushStroke",
@@ -200,6 +270,7 @@ struct SVGPreviewView: NSViewRepresentable {
                       let diameter = number(payload["diameter"]),
                       let operationName = payload["operation"] as? String,
                       let operation = ShapeBrushOperation(rawValue: operationName),
+                      let previewRevision = number(payload["previewRevision"]).map(Int.init),
                       let points = points(payload["points"]),
                       let transform = transform(payload["localToRoot"]) {
                 Task { @MainActor in
@@ -207,7 +278,8 @@ struct SVGPreviewView: NSViewRepresentable {
                                            points: points,
                                            diameter: diameter,
                                            pathTransform: transform,
-                                           operation: operation)
+                                           operation: operation,
+                                           previewRevision: previewRevision)
                 }
             }
         }
@@ -291,7 +363,13 @@ struct SVGPreviewView: NSViewRepresentable {
         body.tool-hand.panning #stage { cursor: grabbing; }
         body.tool-wand #stage { cursor: crosshair; }
         body.tool-brush-add #stage,
-        body.tool-brush-subtract #stage { cursor: none; }
+        body.tool-brush-subtract #stage { cursor: crosshair; }
+        body.has-svg.tool-brush-add #wrap,
+        body.has-svg.tool-brush-subtract #wrap { cursor: none; }
+        body.brush-disabled.tool-brush-add #stage,
+        body.brush-disabled.tool-brush-subtract #stage,
+        body.brush-disabled.tool-brush-add #wrap,
+        body.brush-disabled.tool-brush-subtract #wrap { cursor: progress; }
         /* Point tool: shapes aren't click targets — only the anchor dots are. */
         body.tool-anchor #overlay svg > path { pointer-events: none; }
         body.tool-anchor #stage { cursor: crosshair; }
@@ -327,6 +405,16 @@ struct SVGPreviewView: NSViewRepresentable {
         #overlay svg > path:hover {
             stroke: #ff0;
             stroke-width: 1.5;
+            vector-effect: non-scaling-stroke;
+        }
+        #overlay svg.color-highlight-active > path:not(.color-highlight) {
+            opacity: 0.16;
+        }
+        #overlay svg.color-highlight-active > path.color-highlight {
+            opacity: 1 !important;
+            stroke: #00e5ff !important;
+            stroke-width: 2.5 !important;
+            stroke-linejoin: round;
             vector-effect: non-scaling-stroke;
         }
         #overlay svg > path.wandsel {
@@ -406,9 +494,12 @@ struct SVGPreviewView: NSViewRepresentable {
         const raster = document.getElementById('raster');
         const overlay = document.getElementById('overlay');
         const SVGNS = 'http://www.w3.org/2000/svg';
+        let highlightedColor = null;
 
-        function setImage(src) {
-            cancelBrushStroke();
+        function setImage(src, revision) {
+            clearBrushFeedback();
+            setPreviewRevision(revision);
+            document.body.classList.remove('has-svg');
             overlay.innerHTML = '';
             resetBrushUI();
             raster.style.opacity = 1;
@@ -419,7 +510,8 @@ struct SVGPreviewView: NSViewRepresentable {
             resetView();
         }
 
-        function setSVG(text) {
+        function setSVG(text, revision) {
+            setPreviewRevision(revision);
             // A prior stroke can finish processing while the user is already
             // drawing the next one. Keep that live gesture across the DOM swap;
             // its root-SVG coordinates remain valid against the new geometry.
@@ -427,6 +519,7 @@ struct SVGPreviewView: NSViewRepresentable {
             overlay.innerHTML = text;
             resetBrushUI();
             const s = overlay.querySelector('svg');
+            document.body.classList.toggle('has-svg', !!s);
             if (s) {
                 if (!s.getAttribute('viewBox')) {
                     const w = s.getAttribute('width'), h = s.getAttribute('height');
@@ -442,6 +535,38 @@ struct SVGPreviewView: NSViewRepresentable {
             rebuildPoints();
             if (redrawLiveBrush) drawBrushGesture();
             updateBrushCursor(lastPointerX, lastPointerY);
+            applyColorHighlight();
+        }
+
+        function normalizedHex(value) {
+            if (typeof value !== 'string') return null;
+            const trimmed = value.trim().toUpperCase();
+            if (/^#[0-9A-F]{6}$/.test(trimmed)) return trimmed;
+            if (/^#[0-9A-F]{3}$/.test(trimmed)) {
+                return '#' + trimmed.slice(1).split('').map(c => c + c).join('');
+            }
+            return null;
+        }
+
+        function applyColorHighlight() {
+            const s = overlay.querySelector('svg');
+            if (!s) return;
+            const wanted = normalizedHex(highlightedColor);
+            let matchCount = 0;
+            shapePaths().forEach(path => {
+                const isVisible = path.style.display !== 'none' &&
+                    !!(path.getAttribute('d') || '').trim();
+                const matches = isVisible && wanted !== null &&
+                    normalizedHex(path.getAttribute('fill')) === wanted;
+                path.classList.toggle('color-highlight', matches);
+                if (matches) matchCount += 1;
+            });
+            s.classList.toggle('color-highlight-active', matchCount > 0);
+        }
+
+        function setHighlightedColor(hex) {
+            highlightedColor = normalizedHex(hex);
+            applyColorHighlight();
         }
 
         function setConverting(on) {
@@ -456,17 +581,32 @@ struct SVGPreviewView: NSViewRepresentable {
         let tool = 'cursor';
         let spaceDown = false;      // temporary hand tool while held
         let altDown = false;
+        let brushEnabled = true;
+        let brushSubmissionPending = false;
         let brushSize = 32;         // root SVG/source pixels
         let scale = 1, tx = 0, ty = 0;
 
         let brushActive = false;
+        let activeBrushOperation = 'add';
         let brushPoints = [];
         let brushLastClient = null;
         let brushUI = null, brushCursor = null, brushGesture = null;
         let lastPointerX = null, lastPointerY = null;
+        let brushGestureSequence = 0;
+        let activeBrushGestureSequence = 0;
+        let previewRevision = 0;
 
         function isBrushTool() {
             return tool === 'brush-add' || tool === 'brush-subtract';
+        }
+
+        function effectiveBrushOperation() {
+            if (tool === 'brush-subtract') return 'subtract';
+            return altDown && tool === 'brush-add' ? 'subtract' : 'add';
+        }
+
+        function canUseBrush() {
+            return brushEnabled && !brushSubmissionPending;
         }
 
         function isHandActive() {
@@ -488,6 +628,23 @@ struct SVGPreviewView: NSViewRepresentable {
             updateBrushCursor(lastPointerX, lastPointerY);
         }
 
+        function setBrushEnabled(enabled) {
+            brushEnabled = !!enabled;
+            if (!brushEnabled) clearBrushFeedback();
+            updateToolClasses();
+            updateBrushCursor(lastPointerX, lastPointerY);
+        }
+
+        function setPreviewRevision(revision) {
+            if (!Number.isFinite(revision) || revision === previewRevision) return;
+            previewRevision = revision;
+            selectedIndices = [];
+            selectedAnchorSet.clear();
+            anchorNearest = null;
+            clearLasso();
+            rebuildPoints();
+        }
+
         function setSpaceDown(d) {
             if (d && brushActive) cancelBrushStroke();
             spaceDown = d;
@@ -499,6 +656,7 @@ struct SVGPreviewView: NSViewRepresentable {
         function setAltDown(d) {
             altDown = d;
             updateToolClasses();
+            updateBrushCursor(lastPointerX, lastPointerY);
         }
 
         function updateToolClasses() {
@@ -508,8 +666,12 @@ struct SVGPreviewView: NSViewRepresentable {
             b.classList.toggle('tool-zoom', !hand && tool === 'zoom');
             b.classList.toggle('tool-wand', !hand && tool === 'wand');
             b.classList.toggle('tool-anchor', !hand && tool === 'anchor');
-            b.classList.toggle('tool-brush-add', !hand && tool === 'brush-add');
-            b.classList.toggle('tool-brush-subtract', !hand && tool === 'brush-subtract');
+            const brushOperation = effectiveBrushOperation();
+            b.classList.toggle('tool-brush-add',
+                !hand && isBrushTool() && brushOperation === 'add');
+            b.classList.toggle('tool-brush-subtract',
+                !hand && isBrushTool() && brushOperation === 'subtract');
+            b.classList.toggle('brush-disabled', !canUseBrush());
             b.classList.toggle('alt', altDown);
         }
 
@@ -614,7 +776,7 @@ struct SVGPreviewView: NSViewRepresentable {
             lastPointerY = clientY;
             if (!ensureBrushUI()) return;
 
-            const visible = isBrushTool() && !isHandActive() &&
+            const visible = canUseBrush() && isBrushTool() && !isHandActive() &&
                 isInsideSVG(clientX, clientY);
             const point = visible ? clientToRoot(clientX, clientY) : null;
             if (!point) {
@@ -624,7 +786,8 @@ struct SVGPreviewView: NSViewRepresentable {
             brushCursor.setAttribute('cx', point.x);
             brushCursor.setAttribute('cy', point.y);
             brushCursor.setAttribute('r', brushSize / 2);
-            brushCursor.setAttribute('class', tool === 'brush-add' ? 'add' : 'subtract');
+            brushCursor.setAttribute('class',
+                effectiveBrushOperation() === 'add' ? 'add' : 'subtract');
             brushCursor.style.display = '';
         }
 
@@ -640,7 +803,8 @@ struct SVGPreviewView: NSViewRepresentable {
             }
             brushGesture.setAttribute('d', d);
             brushGesture.setAttribute('stroke-width', brushSize);
-            brushGesture.setAttribute('class', tool === 'brush-add' ? 'add' : 'subtract');
+            brushGesture.setAttribute('class',
+                activeBrushOperation === 'add' ? 'add' : 'subtract');
             brushGesture.style.display = '';
         }
 
@@ -665,8 +829,11 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         function beginBrushStroke(e) {
-            if (e.button !== 0 || !selectedBrushPath() ||
+            if (!canUseBrush() || e.button !== 0 || !selectedBrushPath() ||
                 !isInsideSVG(e.clientX, e.clientY)) return false;
+            brushGestureSequence += 1;
+            activeBrushGestureSequence = brushGestureSequence;
+            activeBrushOperation = effectiveBrushOperation();
             brushActive = true;
             brushPoints = [];
             brushLastClient = null;
@@ -685,6 +852,8 @@ struct SVGPreviewView: NSViewRepresentable {
             const pathIndex = path ? paths.indexOf(path) : -1;
             const matrix = pathLocalToRoot(path);
             const points = brushPoints;
+            const operation = activeBrushOperation;
+            const gestureSequence = activeBrushGestureSequence;
             brushPoints = [];
             brushLastClient = null;
 
@@ -693,16 +862,22 @@ struct SVGPreviewView: NSViewRepresentable {
                 try {
                     window.webkit.messageHandlers.brushStroke.postMessage({
                         pathIndex: pathIndex,
-                        operation: tool === 'brush-add' ? 'add' : 'subtract',
+                        operation: operation,
                         diameter: brushSize,
+                        previewRevision: previewRevision,
                         points: points,
                         localToRoot: [matrix.a, matrix.b, matrix.c,
                                       matrix.d, matrix.e, matrix.f]
                     });
+                    brushSubmissionPending = true;
+                    updateToolClasses();
+                    updateBrushCursor(e.clientX, e.clientY);
                     // The model normally replaces the SVG immediately. This is
                     // only a fallback for an invalid/no-op message.
                     setTimeout(() => {
-                        if (committedGesture && committedGesture.isConnected) {
+                        if (gestureSequence === brushGestureSequence &&
+                            !brushActive &&
+                            committedGesture && committedGesture.isConnected) {
                             committedGesture.style.display = 'none';
                         }
                     }, 1200);
@@ -721,6 +896,14 @@ struct SVGPreviewView: NSViewRepresentable {
             brushPoints = [];
             brushLastClient = null;
             if (brushGesture) brushGesture.style.display = 'none';
+        }
+
+        function clearBrushFeedback() {
+            brushGestureSequence += 1;
+            brushSubmissionPending = false;
+            cancelBrushStroke();
+            updateToolClasses();
+            updateBrushCursor(lastPointerX, lastPointerY);
         }
 
         let panning = false, panStartX = 0, panStartY = 0, panTx = 0, panTy = 0;
@@ -912,7 +1095,10 @@ struct SVGPreviewView: NSViewRepresentable {
             wandMode = true;
             rebuildPoints();
             try {
-                window.webkit.messageHandlers.lassoSelect.postMessage(selectedIndices);
+                window.webkit.messageHandlers.lassoSelect.postMessage({
+                    indices: selectedIndices,
+                    previewRevision: previewRevision
+                });
             } catch (err) {}
         }
 
@@ -995,7 +1181,10 @@ struct SVGPreviewView: NSViewRepresentable {
 
         function reportAnchors() {
             try {
-                window.webkit.messageHandlers.anchorSelect.postMessage(Array.from(selectedAnchorSet));
+                window.webkit.messageHandlers.anchorSelect.postMessage({
+                    indices: Array.from(selectedAnchorSet),
+                    previewRevision: previewRevision
+                });
             } catch (err) {}
         }
 
@@ -1067,6 +1256,7 @@ struct SVGPreviewView: NSViewRepresentable {
                 p.style.display = dead.has(idx) ? 'none' : '';
             });
             rebuildPoints();
+            applyColorHighlight();
         }
 
         document.addEventListener('click', e => {
@@ -1092,7 +1282,10 @@ struct SVGPreviewView: NSViewRepresentable {
             clearLasso();
             rebuildPoints();
             try {
-                window.webkit.messageHandlers.pathClick.postMessage(idx);
+                window.webkit.messageHandlers.pathClick.postMessage({
+                    index: idx,
+                    previewRevision: previewRevision
+                });
             } catch (err) {}
         });
 

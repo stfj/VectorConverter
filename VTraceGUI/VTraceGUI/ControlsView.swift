@@ -96,19 +96,26 @@ struct ControlsView: View {
                               value: $model.simplification.cornerAngle, range: 15...180)
                 }
 
-                if model.colorCount > 1 {
-                    colorsSliderRow
-                }
-
                 if let index = model.selectedPathIndex {
                     selectedShapePanel(index)
                 } else if !model.lassoSelection.isEmpty {
                     lassoPanel
                 } else {
-                    Text("Choose tools from the left toolbar. V selects shapes, Z zooms (⌥ zooms out), W lassos, A edits points, and H or Space pans. Select one shape, then use B to paint onto it or E to erase from it; [ and ] resize both brushes.")
+                    Text("Choose tools from the left toolbar. V selects shapes, Z zooms (⌥ zooms out), W lassos, A edits points, and H or Space pans. Select one shape, then press B to choose the brush; press B again to toggle Add/Remove, or hold ⌥ for Remove temporarily. [ and ] resize it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Divider()
+
+                sectionHeader("Colors")
+
+                if model.colorCount > 1 {
+                    colorsSliderRow
+                }
+
+                ColorPanelView(model: model)
+                    .disabled(!model.editingInteractionEnabled)
 
                 Spacer(minLength: 0)
             }
@@ -254,11 +261,8 @@ struct ControlsView: View {
     private var colorsSliderRow: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("Colors")
+                Text("Smash Similar")
                     .font(.callout.weight(.medium))
-                Text("(Smash similar)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Spacer()
                 Text(displayedColorBudget, format: .number.grouping(.never))
                     .font(.callout.monospacedDigit())

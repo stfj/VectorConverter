@@ -21,6 +21,14 @@ enum PreviewTool {
     }
 }
 
+private nonisolated struct PendingBrushStroke: @unchecked Sendable {
+    let pathIndex: Int
+    let points: [CGPoint]
+    let diameter: CGFloat
+    let pathTransform: CGAffineTransform
+    let operation: ShapeBrushOperation
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -64,6 +72,9 @@ final class AppModel {
 
     /// True while ⌥ is held (zoom tool shows the zoom-out cursor).
     private(set) var altDown = false
+    /// Temporary Space-to-pan applies only while the preview owns keyboard
+    /// focus, so Space can still activate a keyboard-focused native control.
+    private(set) var previewHasKeyboardFocus = false
 
     /// Index (document order) of the shape selected by clicking in the preview.
     var selectedPathIndex: Int?
@@ -107,7 +118,9 @@ final class AppModel {
     /// 0...1 while isUpscaling.
     private(set) var upscaleProgress = 0.0
     private(set) var svgText: String?
+    private(set) var isPreviewReady = false
     private(set) var isConverting = false
+    private(set) var isPostProcessPending = false
     private(set) var pathCount = 0
     private(set) var rawPointCount: Int?
     private(set) var pointCount: Int?
@@ -115,6 +128,13 @@ final class AppModel {
     /// Distinct fill colors in the raw trace; the Colors slider's upper bound.
     private(set) var colorCount = 0
     private(set) var outputColorCount = 0
+    /// Palette after automatic OkLAB reduction, in first-appearance order.
+    /// Manual grouping is exposed when this post-smash palette is small.
+    private(set) var colorPalette: [PaletteColor] = []
+    private var manualColorGroupRules: [ManualColorGroupRule] = []
+    /// The palette group whose rendered regions are emphasized in the preview.
+    /// This is presentation-only state and is intentionally not persisted.
+    private(set) var highlightedColorGroupID: String?
     private(set) var lastConversionTime: TimeInterval?
     var errorMessage: String?
 
@@ -138,10 +158,34 @@ final class AppModel {
     private let upscaler = UpscaylRunner()
     private var upscaleTask: Task<Void, Never>?
     private var debounceTask: Task<Void, Never>?
+    private var traceCancellationTask: Task<Void, Never>?
     private var postProcessDebounceTask: Task<Void, Never>?
     /// The in-flight off-main post-process; cancelled when a newer one starts so
     /// superseded heavy runs stop instead of stacking up across cores.
     private var postProcessWork: Task<SVGSimplifier.Result?, Never>?
+    private var postProcessJobID = 0
+    /// Brush booleans can be expensive for detailed traces. Gestures are queued
+    /// in input order and calculated off the main actor so the UI stays live.
+    private var pendingBrushStrokes: [PendingBrushStroke] = []
+    private var activeBrushStroke: PendingBrushStroke?
+    private var brushWork: Task<String?, Never>?
+    private var brushSessionGeneration: Int?
+    private var brushJobID = 0
+    /// Incremented when pending brush feedback must be cleared in the preview.
+    private(set) var brushFeedbackVersion = 0
+    private var postProcessRequestedAfterBrush = false
+    /// The vtracer generation currently producing a replacement raw SVG.
+    /// Brush interaction is visibly disabled while a replacement trace is
+    /// pending or running, since its new path identities cannot safely accept
+    /// strokes aimed at the old trace.
+    private var traceGeneration: Int?
+    private var traceRequestID = 0
+    private var activeTraceRequestID: Int?
+    private var traceWaitingForBrushRequestID: Int?
+    private var postProcessRequestedAfterTrace = false
+    private(set) var isTracePending = false
+    /// Changes whenever a new image, design, or raw trace owns path indices.
+    private(set) var previewRevision = 0
     private var generation = 0
     /// Staleness for the upscale pipeline only; `generation` also moves on
     /// trace/post-process changes, which shouldn't orphan a finishing upscale.
@@ -171,7 +215,9 @@ final class AppModel {
         }
 
         // Leave panels (open/save dialogs) and any text editing alone.
-        guard let window = event.window, !(window is NSPanel) else { return event }
+        guard NSApp.modalWindow == nil,
+              let window = event.window,
+              !(window is NSPanel) else { return event }
         if window.firstResponder is NSTextView { return event }
 
         // Tool switching and brush sizing. No command/option/control modifiers,
@@ -185,7 +231,16 @@ final class AppModel {
             case "w": selectTool(.wand)
             case "a": selectTool(.anchor)
             case "h": selectTool(.hand)
-            case "b": selectTool(.addBrush)
+            case "b":
+                if !event.isARepeat {
+                    if previewTool == .addBrush {
+                        selectTool(.subtractBrush)
+                    } else if previewTool == .subtractBrush {
+                        selectTool(.addBrush)
+                    } else {
+                        selectTool(.addBrush)
+                    }
+                }
             case "e": selectTool(.subtractBrush)
             case "[": adjustBrushSize(growing: false)
             case "]": adjustBrushSize(growing: true)
@@ -202,7 +257,7 @@ final class AppModel {
         if event.type == .keyDown,
            event.modifierFlags.intersection([.command, .option, .control, .shift]) == [.command],
            let key = event.charactersIgnoringModifiers?.lowercased() {
-            if key == "c", svgText != nil {
+            if key == "c", canExportSVG {
                 copySVGToClipboard()
                 return nil
             }
@@ -214,6 +269,7 @@ final class AppModel {
 
         switch event.keyCode {
         case 49: // space: hand tool while held (and hide control points)
+            guard previewHasKeyboardFocus else { return event }
             if event.type == .keyDown {
                 if !event.isARepeat { spaceDown = true }
             } else {
@@ -238,6 +294,14 @@ final class AppModel {
 
     /// Deletes the wand selection if there is one, else the clicked shape.
     func deleteSelectedShape() {
+        guard editingInteractionEnabled else {
+            errorMessage = "Wait for the current image update before editing shapes."
+            return
+        }
+        guard !isBrushProcessing else {
+            errorMessage = "Wait for the brush stroke to finish before deleting a shape."
+            return
+        }
         if !lassoSelection.isEmpty {
             let group = lassoSelection.sorted()
             deletedPaths.formUnion(group)
@@ -259,6 +323,14 @@ final class AppModel {
     /// knob changes. Indices are into the currently-displayed path, so removal
     /// is applied to exactly what the user clicked.
     func deleteSelectedAnchors() {
+        guard editingInteractionEnabled else {
+            errorMessage = "Wait for the current image update before editing points."
+            return
+        }
+        guard !isBrushProcessing else {
+            errorMessage = "Wait for the brush stroke to finish before editing points."
+            return
+        }
         guard let shape = selectedPathIndex, !selectedAnchors.isEmpty,
               let displayed = currentPathD(shape) else { selectedAnchors = []; return }
         let edited = SVGSimplifier.removeAnchors(displayed, selectedAnchors)
@@ -298,9 +370,35 @@ final class AppModel {
         selectedAnchors = indices
     }
 
-    var canUndoDeletion: Bool { !undoStack.isEmpty }
+    func setPreviewKeyboardFocus(_ focused: Bool) {
+        previewHasKeyboardFocus = focused
+        if !focused { spaceDown = false }
+    }
+
+    var isBrushProcessing: Bool {
+        activeBrushStroke != nil || brushWork != nil || !pendingBrushStrokes.isEmpty
+    }
+
+    var editingInteractionEnabled: Bool {
+        isPreviewReady && !isUpscaling && !isTracePending
+    }
+
+    var brushInteractionEnabled: Bool { editingInteractionEnabled }
+
+    var canUndoDeletion: Bool {
+        isBrushProcessing || (editingInteractionEnabled && !undoStack.isEmpty)
+    }
 
     func undoLastEdit() {
+        // A submitted brush gesture is already the newest user transaction,
+        // even while its boolean operation is still running. Undo that gesture
+        // alone instead of also popping the previously committed edit.
+        if undoNewestPendingBrushStroke() { return }
+
+        guard editingInteractionEnabled else {
+            errorMessage = "Wait for the current image update before undoing an edit."
+            return
+        }
         guard let action = undoStack.popLast() else { return }
         switch action {
         case .deleteShapes(let group):
@@ -318,6 +416,30 @@ final class AppModel {
         schedulePostProcess()
     }
 
+    /// Cancels exactly the newest uncommitted gesture. Later queued gestures
+    /// are removed first; the active background job is cancelled only when it
+    /// is itself newest. Core Graphics work is non-cooperative, so the job ID
+    /// also prevents a late result from committing.
+    @discardableResult
+    private func undoNewestPendingBrushStroke() -> Bool {
+        if !pendingBrushStrokes.isEmpty {
+            pendingBrushStrokes.removeLast()
+            brushFeedbackVersion += 1
+            return true
+        }
+        guard brushWork != nil else { return false }
+
+        brushWork?.cancel()
+        brushWork = nil
+        activeBrushStroke = nil
+        brushJobID += 1
+        brushFeedbackVersion += 1
+        if let sessionGeneration = brushSessionGeneration {
+            finishBrushSession(generation: sessionGeneration)
+        }
+        return true
+    }
+
     // MARK: - Preview tools
 
     func selectTool(_ tool: PreviewTool) {
@@ -332,40 +454,392 @@ final class AppModel {
         } else {
             stepped = proposed
         }
-        let imageLimit = sourcePixelSize.map { max(Double($0.width), Double($0.height)) } ?? 512
-        brushSize = min(max(imageLimit, 512), max(1, stepped))
+        brushSize = stepped
+        clampBrushSizeToCanvas()
     }
 
-    /// Bakes one completed round brush gesture into the selected shape. Each
-    /// gesture is a single undo step and uses the same persistence path as
-    /// anchor edits, so it survives simplification changes and design saves.
+    private func clampBrushSizeToCanvas() {
+        let imageLimit = sourcePixelSize.map {
+            max(Double($0.width), Double($0.height))
+        } ?? 512
+        brushSize = min(max(imageLimit, 512), max(1, brushSize))
+    }
+
+    /// Queues one completed round brush gesture. Each gesture remains a single
+    /// undo step, but parsing and Core Graphics boolean work happen off-main.
+    /// A session uses one stable preview generation and serial ordering, so
+    /// rapid add/subtract gestures cannot overwrite each other out of order.
     func applyBrushStroke(to pathIndex: Int,
                           points: [CGPoint],
                           diameter: Double,
                           pathTransform: CGAffineTransform,
-                          operation: ShapeBrushOperation) {
+                          operation: ShapeBrushOperation,
+                          previewRevision messageRevision: Int) {
         guard selectedPathIndex == pathIndex,
               !lassoSelection.contains(pathIndex),
-              !points.isEmpty else { return }
+              !points.isEmpty,
+              brushInteractionEnabled,
+              messageRevision == previewRevision else {
+            brushFeedbackVersion += 1
+            return
+        }
 
-        guard let base = currentPathD(pathIndex) else { return }
-        guard let edited = ShapeBrushGeometry.apply(
-            to: base,
+        let wasIdle = brushWork == nil && pendingBrushStrokes.isEmpty
+        if wasIdle {
+            // Any older post-process can be reproduced from rawSVG after this
+            // session. Invalidating it prevents an old result from replacing a
+            // newly painted preview while the boolean calculation is running.
+            postProcessDebounceTask?.cancel()
+            postProcessDebounceTask = nil
+            postProcessWork?.cancel()
+            postProcessWork = nil
+            postProcessJobID += 1
+            isPostProcessPending = false
+            generation += 1
+            brushSessionGeneration = generation
+            postProcessRequestedAfterBrush = false
+            isConverting = false
+        }
+
+        pendingBrushStrokes.append(PendingBrushStroke(
+            pathIndex: pathIndex,
             points: points,
             diameter: CGFloat(diameter),
             pathTransform: pathTransform,
             operation: operation
-        ) else {
-            errorMessage = "That shape could not be edited with the brush."
+        ))
+        startNextBrushStroke()
+    }
+
+    private func startNextBrushStroke() {
+        guard brushWork == nil,
+              let sessionGeneration = brushSessionGeneration,
+              sessionGeneration == generation else {
+            if brushSessionGeneration != generation {
+                cancelBrushWork()
+            }
             return
         }
-        guard edited != base else { return }
 
-        selectedAnchors = []
-        undoStack.append(.changeGeometry(path: pathIndex, previous: editedGeometry[pathIndex]))
-        editedGeometry[pathIndex] = edited
-        replaceCurrentPathD(pathIndex, with: edited)
+        while !pendingBrushStrokes.isEmpty {
+            let request = pendingBrushStrokes.removeFirst()
+            guard !deletedPaths.contains(request.pathIndex),
+                  let base = currentPathD(request.pathIndex) else {
+                continue
+            }
+
+            activeBrushStroke = request
+            brushJobID += 1
+            let jobID = brushJobID
+            let work = Task.detached(priority: .userInitiated) { () -> String? in
+                guard !Task.isCancelled else { return nil }
+                return ShapeBrushGeometry.apply(
+                    to: base,
+                    points: request.points,
+                    diameter: request.diameter,
+                    pathTransform: request.pathTransform,
+                    operation: request.operation
+                )
+            }
+            brushWork = work
+            Task { [weak self] in
+                let edited = await work.value
+                guard let self else { return }
+                self.finishBrushStroke(
+                    request,
+                    base: base,
+                    edited: edited,
+                    sessionGeneration: sessionGeneration,
+                    jobID: jobID
+                )
+            }
+            return
+        }
+
+        finishBrushSession(generation: sessionGeneration)
+    }
+
+    private func finishBrushStroke(_ request: PendingBrushStroke,
+                                   base: String,
+                                   edited: String?,
+                                   sessionGeneration: Int,
+                                   jobID: Int) {
+        guard jobID == brushJobID else { return }
+        brushWork = nil
+        activeBrushStroke = nil
+
+        guard sessionGeneration == generation,
+              currentPathD(request.pathIndex) == base else {
+            cancelBrushWork()
+            return
+        }
+        guard let edited else {
+            errorMessage = "That shape could not be edited with the brush."
+            pendingBrushStrokes = []
+            brushFeedbackVersion += 1
+            finishBrushSession(generation: sessionGeneration)
+            return
+        }
+
+        if edited != base {
+            selectedAnchors = []
+            undoStack.append(.changeGeometry(
+                path: request.pathIndex,
+                previous: editedGeometry[request.pathIndex]
+            ))
+            editedGeometry[request.pathIndex] = edited
+            replaceCurrentPathD(request.pathIndex, with: edited)
+        }
+        brushFeedbackVersion += 1
+        startNextBrushStroke()
+    }
+
+    private func finishBrushSession(generation sessionGeneration: Int) {
+        guard brushWork == nil else { return }
+        brushSessionGeneration = nil
+        guard sessionGeneration == generation else {
+            pendingBrushStrokes = []
+            return
+        }
+        postProcessRequestedAfterBrush = false
+
+        // A tracer-settings change may have reached the end of its debounce
+        // while this stroke was committing. Give that replacement trace
+        // priority; it will post-process with every latest setting.
+        if traceWaitingForBrushRequestID == traceRequestID {
+            let requestID = traceRequestID
+            traceWaitingForBrushRequestID = nil
+            startConversion(requestID: requestID)
+            return
+        }
+        if isTracePending { return }
+
+        // Also restores any older post-process that was cancelled when the
+        // brush session began, even if every gesture was a geometric no-op.
         schedulePostProcess()
+    }
+
+    private func cancelBrushWork() {
+        brushWork?.cancel()
+        brushWork = nil
+        activeBrushStroke = nil
+        pendingBrushStrokes = []
+        brushSessionGeneration = nil
+        brushJobID += 1
+        brushFeedbackVersion += 1
+        postProcessRequestedAfterBrush = false
+    }
+
+    // MARK: - Manual color groups
+
+    var canShowManualColorPanel: Bool {
+        !colorPalette.isEmpty && colorPalette.count < 32
+    }
+
+    /// Presentation groups include unedited singleton colors alongside the
+    /// compact rules that actually need to be persisted.
+    var manualColorGroups: [ManualColorGroup] {
+        let paletteByHex = Dictionary(
+            uniqueKeysWithValues: colorPalette.map { ($0.hex, $0) }
+        )
+        var ruleByMember: [String: ManualColorGroupRule] = [:]
+        for rule in manualColorGroupRules {
+            for member in rule.members where ruleByMember[member] == nil {
+                ruleByMember[member] = rule
+            }
+        }
+
+        var visited: Set<String> = []
+        var groups: [ManualColorGroup] = []
+        for color in colorPalette where !visited.contains(color.hex) {
+            guard let rule = ruleByMember[color.hex] else {
+                visited.insert(color.hex)
+                groups.append(ManualColorGroup(
+                    id: color.hex,
+                    colorHex: color.hex,
+                    members: [color]
+                ))
+                continue
+            }
+
+            let members = rule.members.compactMap { paletteByHex[$0] }
+            guard let first = members.first else { continue }
+            visited.formUnion(members.map(\.hex))
+            groups.append(ManualColorGroup(
+                id: first.hex,
+                colorHex: PaletteHex.normalize(rule.colorHex) ?? first.hex,
+                members: members
+            ))
+        }
+        return groups
+    }
+
+    /// The final, post-grouping fill shown by the selected palette group.
+    /// The preview matches this against its rendered paths, so every visible
+    /// region with that color is highlighted together.
+    var highlightedColorHex: String? {
+        guard let highlightedColorGroupID else { return nil }
+        return manualColorGroups.first {
+            $0.id == highlightedColorGroupID
+        }?.colorHex
+    }
+
+    func setColorHighlight(groupID: String) {
+        guard let groupID = PaletteHex.normalize(groupID),
+              manualColorGroups.contains(where: { $0.id == groupID }) else {
+            return
+        }
+        highlightedColorGroupID = groupID
+    }
+
+    func clearColorHighlight() {
+        highlightedColorGroupID = nil
+    }
+
+    /// A delayed exit from one tile must not clear a newer neighboring hover.
+    func clearColorHighlight(groupID: String) {
+        guard let groupID = PaletteHex.normalize(groupID),
+              highlightedColorGroupID == groupID else { return }
+        highlightedColorGroupID = nil
+    }
+
+    /// Merges the source group into the destination group. Member drags first
+    /// call `ungroup`, so they move one post-smash color; group drags move all members.
+    func group(sourceHex: String, ontoTargetHex targetHex: String) {
+        guard editingInteractionEnabled,
+              canShowManualColorPanel,
+              let source = PaletteHex.normalize(sourceHex),
+              let target = PaletteHex.normalize(targetHex),
+              let sourceGroup = manualColorGroups.first(where: {
+                  $0.members.contains(where: { $0.hex == source })
+              }),
+              let targetGroup = manualColorGroups.first(where: {
+                  $0.members.contains(where: { $0.hex == target })
+              }),
+              sourceGroup.id != targetGroup.id else { return }
+
+        // Palette emphasis is hover-only. A completed drag ends that hover
+        // preview rather than transferring sticky highlight ownership.
+        highlightedColorGroupID = nil
+        let targetMembers = targetGroup.members.map(\.hex)
+        let sourceMembers = sourceGroup.members.map(\.hex)
+        let touched = Set(targetMembers + sourceMembers)
+        manualColorGroupRules.removeAll {
+            !$0.members.allSatisfy { !touched.contains($0) }
+        }
+        manualColorGroupRules.append(ManualColorGroupRule(
+            members: targetMembers + sourceMembers.filter { !targetMembers.contains($0) },
+            colorHex: targetGroup.colorHex
+        ))
+        finishManualColorChange()
+    }
+
+    /// Extracts one post-smash color from its group. The remaining group's first
+    /// member becomes its representative; a genuinely custom output survives.
+    func ungroup(hex: String) {
+        guard editingInteractionEnabled,
+              canShowManualColorPanel,
+              let hex = PaletteHex.normalize(hex),
+              let group = manualColorGroups.first(where: {
+                  $0.members.contains(where: { $0.hex == hex })
+              }) else { return }
+
+        highlightedColorGroupID = nil
+        let memberHexes = group.members.map(\.hex)
+        let wasCustom = group.colorHex != group.id
+        guard memberHexes.count > 1 || wasCustom else { return }
+
+        let touched = Set(memberHexes)
+        manualColorGroupRules.removeAll {
+            !$0.members.allSatisfy { !touched.contains($0) }
+        }
+
+        let remaining = memberHexes.filter { $0 != hex }
+        if let first = remaining.first {
+            let remainingColor = wasCustom ? group.colorHex : first
+            if remaining.count > 1 || remainingColor != first {
+                manualColorGroupRules.append(ManualColorGroupRule(
+                    members: remaining,
+                    colorHex: remainingColor
+                ))
+            }
+        }
+        finishManualColorChange()
+    }
+
+    func setGroupColor(groupID: String, hex: String) {
+        guard editingInteractionEnabled,
+              canShowManualColorPanel,
+              let groupID = PaletteHex.normalize(groupID),
+              let output = PaletteHex.normalize(hex),
+              let group = manualColorGroups.first(where: { $0.id == groupID }),
+              output != group.colorHex else { return }
+
+        highlightedColorGroupID = nil
+        let members = group.members.map(\.hex)
+        let touched = Set(members)
+        manualColorGroupRules.removeAll {
+            !$0.members.allSatisfy { !touched.contains($0) }
+        }
+        if members.count > 1 || output != group.id {
+            manualColorGroupRules.append(ManualColorGroupRule(
+                members: members,
+                colorHex: output
+            ))
+        }
+        finishManualColorChange()
+    }
+
+    /// Manual grouping runs after the automatic OkLAB reduction, so direct
+    /// edits keep the current slider budget and are applied to its resulting
+    /// post-smash palette.
+    private func finishManualColorChange() {
+        schedulePostProcess()
+    }
+
+    private var manualColorMapping: [String: String] {
+        var mapping: [String: String] = [:]
+        for rule in manualColorGroupRules {
+            guard let output = PaletteHex.normalize(rule.colorHex) else { continue }
+            for member in rule.members {
+                if let member = PaletteHex.normalize(member),
+                   mapping[member] == nil {
+                    mapping[member] = output
+                }
+            }
+        }
+        return mapping
+    }
+
+    private func sanitizeManualColorGroups() {
+        let allowed = Set(colorPalette.map(\.hex))
+        var claimed: Set<String> = []
+        var sanitized: [ManualColorGroupRule] = []
+
+        for rule in manualColorGroupRules {
+            var members: [String] = []
+            for rawMember in rule.members {
+                guard let member = PaletteHex.normalize(rawMember),
+                      allowed.contains(member),
+                      claimed.insert(member).inserted else { continue }
+                members.append(member)
+            }
+            guard let first = members.first else { continue }
+            let output = PaletteHex.normalize(rule.colorHex) ?? first
+            if members.count > 1 || output != first {
+                sanitized.append(ManualColorGroupRule(
+                    members: members,
+                    colorHex: output
+                ))
+            }
+        }
+        manualColorGroupRules = sanitized
+        if !canShowManualColorPanel {
+            highlightedColorGroupID = nil
+        } else if let highlightedColorGroupID,
+                  !manualColorGroups.contains(where: { $0.id == highlightedColorGroupID }) {
+            self.highlightedColorGroupID = nil
+        }
     }
 
     // MARK: - Selection
@@ -411,12 +885,20 @@ final class AppModel {
         }
         originalPixelSize = CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
         sourcePixelSize = originalPixelSize
+        clampBrushSizeToCanvas()
         hasImage = true
         svgText = nil
+        isPreviewReady = false
         rawSVG = nil
         pathCount = 0
         rawPointCount = nil
         pointCount = nil
+        nodeCount = nil
+        colorCount = 0
+        outputColorCount = 0
+        colorPalette = []
+        manualColorGroupRules = []
+        highlightedColorGroupID = nil
         lastConversionTime = nil
         errorMessage = nil
         selectedPathIndex = nil
@@ -427,6 +909,7 @@ final class AppModel {
         deletedPaths = []
         undoStack = []
         currentDesignURL = nil
+        previewRevision += 1
         imageVersion += 1
         prepareInput()
     }
@@ -475,7 +958,7 @@ final class AppModel {
     // MARK: - Export
 
     func exportSVG() {
-        guard let svgText else { return }
+        guard canExportSVG, let svgText else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.svg]
         panel.nameFieldStringValue = sourceName + ".svg"
@@ -489,7 +972,7 @@ final class AppModel {
     }
 
     func copySVGToClipboard() {
-        guard let svgText else { return }
+        guard canExportSVG, let svgText else { return }
         let cleaned = exportableSVG(svgText)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -512,10 +995,22 @@ final class AppModel {
     // MARK: - Design files (save / load a .vtrace for later tweaking)
 
     /// A design can be saved once there's a trace to preserve.
-    var canSaveDesign: Bool { svgText != nil && hasImage }
+    var canExportSVG: Bool {
+        svgText != nil &&
+            !isBrushProcessing &&
+            !isUpscaling &&
+            !isTracePending &&
+            !isPostProcessPending &&
+            !isConverting
+    }
+
+    var canSaveDesign: Bool {
+        canExportSVG && hasImage
+    }
 
     /// ⌘S: write back to the open file, or prompt if this design is untitled.
     func saveDesign() {
+        guard canSaveDesign else { return }
         if let url = currentDesignURL {
             writeDesign(to: url)
         } else {
@@ -536,7 +1031,7 @@ final class AppModel {
     }
 
     private func writeDesign(to url: URL) {
-        guard let document = buildDocument() else { return }
+        guard canSaveDesign, let document = buildDocument() else { return }
         do {
             try document.encoded().write(to: url, options: .atomic)
             errorMessage = nil
@@ -564,6 +1059,7 @@ final class AppModel {
             pathOverrides: pathOverrides,
             editedGeometry: editedGeometry,
             deletedPaths: deletedPaths.sorted(),
+            manualColorGroupRules: manualColorGroupRules,
             originalPixelWidth: Int(original.width),
             originalPixelHeight: Int(original.height),
             inputPixelWidth: Int(input.width),
@@ -595,9 +1091,12 @@ final class AppModel {
 
         // Stop anything in flight; the loaded design owns the UI state now.
         upscaleTask?.cancel()
-        debounceTask?.cancel()
+        upscaleTask = nil
+        inputGeneration += 1
         postProcessDebounceTask?.cancel()
         postProcessWork?.cancel()
+        cancelBrushWork()
+        invalidateTracePipeline()
         Task { [upscaler] in await upscaler.cancel() }
 
         do {
@@ -617,9 +1116,20 @@ final class AppModel {
         suppressPipeline = false
 
         rawSVG = document.rawSVG
+        svgText = nil
+        isPreviewReady = false
+        pathCount = 0
+        rawPointCount = nil
+        pointCount = nil
+        nodeCount = nil
+        colorCount = 0
+        outputColorCount = 0
         pathOverrides = document.pathOverrides
         editedGeometry = document.editedGeometry
         deletedPaths = Set(document.deletedPaths)
+        manualColorGroupRules = document.manualColorGroupRules ?? []
+        colorPalette = []
+        highlightedColorGroupID = nil
         undoStack = []
         selectedPathIndex = nil
         lassoSelection = []
@@ -628,11 +1138,13 @@ final class AppModel {
         sourceName = document.sourceName
         originalPixelSize = CGSize(width: document.originalPixelWidth, height: document.originalPixelHeight)
         sourcePixelSize = CGSize(width: document.inputPixelWidth, height: document.inputPixelHeight)
+        clampBrushSizeToCanvas()
         hasImage = true
         isUpscaling = false
         upscaleProgress = 0
         currentDesignURL = url
         errorMessage = nil
+        previewRevision += 1
         imageVersion += 1
 
         // Re-derive the preview from the restored raw SVG (no CLI, no upscale).
@@ -651,6 +1163,10 @@ final class AppModel {
     }
 
     func setOverride(_ settings: SimplificationSettings, for index: Int) {
+        guard editingInteractionEnabled else {
+            errorMessage = "Wait for the current image update before editing a shape."
+            return
+        }
         pathOverrides[index] = settings
         // The shape re-simplifies from its baked geometry, so point edits hold;
         // only the live anchor selection (stale indices) is dropped.
@@ -659,6 +1175,10 @@ final class AppModel {
     }
 
     func clearOverride(for index: Int) {
+        guard editingInteractionEnabled else {
+            errorMessage = "Wait for the current image update before editing a shape."
+            return
+        }
         guard pathOverrides.removeValue(forKey: index) != nil else { return }
         if selectedPathIndex == index { selectedAnchors = [] }
         schedulePostProcess()
@@ -666,13 +1186,45 @@ final class AppModel {
 
     // MARK: - Upscaling
 
+    private func queueTraceCancellation() {
+        let prior = traceCancellationTask
+        traceCancellationTask = Task { [runner] in
+            await prior?.value
+            await runner.cancel()
+        }
+    }
+
+    /// Invalidates every trace request belonging to the previous input/design.
+    /// The request token prevents a terminating old process from clearing the
+    /// pending state of a newer request.
+    private func invalidateTracePipeline() {
+        debounceTask?.cancel()
+        debounceTask = nil
+        postProcessDebounceTask?.cancel()
+        postProcessDebounceTask = nil
+        postProcessWork?.cancel()
+        postProcessWork = nil
+        postProcessJobID += 1
+        isPostProcessPending = false
+        traceRequestID += 1
+        activeTraceRequestID = nil
+        traceWaitingForBrushRequestID = nil
+        traceGeneration = nil
+        isTracePending = false
+        postProcessRequestedAfterTrace = false
+        generation += 1
+        isConverting = false
+        queueTraceCancellation()
+    }
+
     /// Rebuilds input.png from the cached original — upscaled when enabled,
     /// a straight copy otherwise — then kicks off a fresh trace.
     private func prepareInput() {
         guard hasImage else { return }
+        cancelBrushWork()
         upscaleTask?.cancel()
         // Invalidate any in-flight conversion; it traced the old input.
-        generation += 1
+        invalidateTracePipeline()
         inputGeneration += 1
         let gen = inputGeneration
 
@@ -687,6 +1239,7 @@ final class AppModel {
                 return
             }
             sourcePixelSize = originalPixelSize
+            clampBrushSizeToCanvas()
             imageVersion += 1
             scheduleConversion(immediately: true)
             return
@@ -712,6 +1265,7 @@ final class AppModel {
                 try FileManager.default.moveItem(at: staging, to: destination)
                 if let rep = NSBitmapImageRep(data: try Data(contentsOf: destination)) {
                     self.sourcePixelSize = CGSize(width: rep.pixelsWide, height: rep.pixelsHigh)
+                    self.clampBrushSizeToCanvas()
                 }
                 self.isUpscaling = false
                 self.imageVersion += 1
@@ -730,28 +1284,70 @@ final class AppModel {
 
     private func scheduleConversion(immediately: Bool = false) {
         guard hasImage else { return }
+
+        traceRequestID += 1
+        let requestID = traceRequestID
+        isTracePending = true
+        traceWaitingForBrushRequestID = nil
+        postProcessRequestedAfterTrace = false
+
+        // A replacement trace supersedes any old trace/post-process. Preserve
+        // an active brush session's generation until its submitted gesture has
+        // committed; the trace waits for that short transaction below.
+        postProcessDebounceTask?.cancel()
+        postProcessDebounceTask = nil
+        postProcessWork?.cancel()
+        postProcessWork = nil
+        postProcessJobID += 1
+        isPostProcessPending = false
+        if !isBrushProcessing {
+            generation += 1
+        }
+        isConverting = true
+
+        // End a now-obsolete CLI process during the debounce. The replacement
+        // awaits this ordered cancellation before starting, so a late cancel
+        // can never terminate the new process.
+        queueTraceCancellation()
+
         debounceTask?.cancel()
         debounceTask = Task { [weak self] in
             if !immediately {
                 try? await Task.sleep(for: .milliseconds(250))
             }
-            guard !Task.isCancelled else { return }
-            self?.startConversion()
+            guard let self, !Task.isCancelled,
+                  requestID == self.traceRequestID else { return }
+            self.startConversion(requestID: requestID)
         }
     }
 
-    private func startConversion() {
+    private func startConversion(requestID: Int) {
+        guard requestID == traceRequestID else { return }
+        debounceTask = nil
+        if isBrushProcessing {
+            traceWaitingForBrushRequestID = requestID
+            return
+        }
+
+        traceWaitingForBrushRequestID = nil
         generation += 1
         let gen = generation
+        traceGeneration = gen
+        activeTraceRequestID = requestID
+        let cancellation = traceCancellationTask
+        traceCancellationTask = nil
         let settings = settings
         let input = inputPNGURL
         isConverting = true
         Task {
             let start = Date()
             do {
+                await cancellation?.value
+                guard requestID == traceRequestID, gen == generation else { return }
                 let raw = try await runner.convert(inputURL: input, settings: settings)
-                guard gen == generation else { return }
+                guard requestID == traceRequestID, gen == generation else { return }
                 rawSVG = raw
+                isPreviewReady = false
                 // Shapes have new identities after a re-trace; stale per-shape
                 // overrides and deletions would land on the wrong paths.
                 selectedPathIndex = nil
@@ -760,62 +1356,127 @@ final class AppModel {
                 pathOverrides = [:]
                 editedGeometry = [:]
                 deletedPaths = []
+                colorPalette = []
+                highlightedColorGroupID = nil
                 undoStack = []
+                previewRevision += 1
                 await applyPostProcess(to: raw, generation: gen, conversionStart: start)
+                guard requestID == traceRequestID, gen == generation else { return }
+                finishTrace(requestID: requestID, generation: gen, succeeded: true)
             } catch is CancellationError {
                 // Superseded by a newer conversion; the newer one owns the UI state.
+                finishTrace(requestID: requestID, generation: gen, succeeded: false)
             } catch {
-                guard gen == generation else { return }
+                guard requestID == traceRequestID, gen == generation else { return }
                 isConverting = false
                 errorMessage = error.localizedDescription
+                finishTrace(requestID: requestID, generation: gen, succeeded: false)
             }
+        }
+    }
+
+    private func finishTrace(requestID: Int, generation gen: Int, succeeded: Bool) {
+        guard activeTraceRequestID == requestID else { return }
+        activeTraceRequestID = nil
+        if traceGeneration == gen { traceGeneration = nil }
+
+        // A newer debounced request still owns the busy/disabled state.
+        guard requestID == traceRequestID else { return }
+        isTracePending = false
+        isConverting = false
+
+        let needsFollowUp = postProcessRequestedAfterTrace &&
+            (succeeded || rawSVG != nil)
+        let preservedError = succeeded ? nil : errorMessage
+        postProcessRequestedAfterTrace = false
+        if needsFollowUp {
+            schedulePostProcess(preservingError: preservedError)
         }
     }
 
     /// Re-runs only the post-processing stage (simplification) on the cached
     /// raw vtracer output.
-    private func schedulePostProcess() {
+    private func schedulePostProcess(preservingError: String? = nil) {
         guard let raw = rawSVG else { return }
+        if isBrushProcessing {
+            postProcessRequestedAfterBrush = true
+            return
+        }
+        if isUpscaling || isTracePending {
+            postProcessRequestedAfterTrace = true
+            return
+        }
+
         generation += 1
         let gen = generation
         postProcessDebounceTask?.cancel()
+        postProcessWork?.cancel()
+        postProcessWork = nil
+        postProcessJobID += 1
+        isPostProcessPending = true
+        isConverting = true
         postProcessDebounceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(120))
             guard let self, !Task.isCancelled, gen == self.generation else { return }
-            self.isConverting = true
-            await self.applyPostProcess(to: raw, generation: gen, conversionStart: nil)
+            self.postProcessDebounceTask = nil
+            await self.applyPostProcess(
+                to: raw,
+                generation: gen,
+                conversionStart: nil,
+                preservingError: preservingError
+            )
         }
     }
 
     /// Transforms applied to vtracer's raw SVG before it reaches the preview
     /// and export. Runs off the main actor; results are dropped if stale.
-    private func applyPostProcess(to raw: String, generation gen: Int, conversionStart: Date?) async {
+    private func applyPostProcess(to raw: String,
+                                  generation gen: Int,
+                                  conversionStart: Date?,
+                                  preservingError: String? = nil) async {
         // Stop any earlier computation that this one supersedes.
         postProcessWork?.cancel()
+        postProcessJobID += 1
+        let jobID = postProcessJobID
+        isPostProcessPending = true
         isConverting = true
         let simplify = simplification
         let overrides = pathOverrides
         let deleted = deletedPaths
         let edited = editedGeometry
+        let manualColors = manualColorMapping
         let work = Task.detached(priority: .userInitiated) {
             SVGSimplifier.process(raw, settings: simplify, overrides: overrides,
-                                  deleted: deleted, editedGeometry: edited)
+                                  deleted: deleted, editedGeometry: edited,
+                                  manualColors: manualColors)
         }
         postProcessWork = work
         let result = await work.value
         // nil → this run was cancelled by a newer one, which owns the UI state.
-        guard let result, gen == generation else { return }
+        guard jobID == postProcessJobID else { return }
+        postProcessWork = nil
+        guard let result, gen == generation else {
+            if gen == generation {
+                isPostProcessPending = false
+                isConverting = false
+            }
+            return
+        }
         svgText = result.svg
+        isPreviewReady = true
         pathCount = result.pathCount
         rawPointCount = result.inputPointCount
         pointCount = result.outputPointCount
         nodeCount = result.outputNodeCount
         colorCount = result.inputColorCount
         outputColorCount = result.outputColorCount
+        colorPalette = result.automaticColors
+        sanitizeManualColorGroups()
         if let conversionStart {
             lastConversionTime = Date().timeIntervalSince(conversionStart)
         }
+        isPostProcessPending = false
         isConverting = false
-        errorMessage = nil
+        errorMessage = preservingError
     }
 }

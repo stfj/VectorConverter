@@ -24,6 +24,15 @@ actor VTracerRunner {
     private var currentProcess: Process?
     private var binaryURL: URL?
 
+    /// Stops any in-flight trace when a different document/input takes
+    /// ownership of the app. Starting another conversion also terminates the
+    /// previous process, but explicit cancellation avoids leaving stale trace
+    /// state alive while a saved design is being opened.
+    func cancel() {
+        currentProcess?.terminate()
+        currentProcess = nil
+    }
+
     func convert(inputURL: URL, settings: VTracerSettings) async throws -> String {
         currentProcess?.terminate()
 

@@ -36,7 +36,7 @@ struct ContentView: View {
                 } label: {
                     Label("Export SVG…", systemImage: "square.and.arrow.down")
                 }
-                .disabled(model.svgText == nil)
+                .disabled(!model.canExportSVG)
                 .help("Export the traced SVG (⌘E)")
             }
         }
@@ -174,20 +174,26 @@ struct ContentView: View {
                     .foregroundStyle(Color.accentColor)
             }
             if model.previewTool == .addBrush {
-                if model.selectedPathIndex == nil {
+                if !model.brushInteractionEnabled {
+                    Text("add brush — waiting for the current image update")
+                        .foregroundStyle(Color.accentColor)
+                } else if model.selectedPathIndex == nil {
                     Text("add brush — select a shape with V first — [ ] resize (\(Int(model.brushSize)) px)")
                         .foregroundStyle(Color.accentColor)
                 } else {
-                    Text("add brush — paint onto the selected shape — [ ] resize (\(Int(model.brushSize)) px)")
+                    Text("add brush — paint to add, hold ⌥ to remove, B toggles — [ ] resize (\(Int(model.brushSize)) px)")
                         .foregroundStyle(Color.accentColor)
                 }
             }
             if model.previewTool == .subtractBrush {
-                if model.selectedPathIndex == nil {
-                    Text("subtract brush — select a shape with V first — [ ] resize (\(Int(model.brushSize)) px)")
+                if !model.brushInteractionEnabled {
+                    Text("remove brush — waiting for the current image update")
+                        .foregroundStyle(Color.accentColor)
+                } else if model.selectedPathIndex == nil {
+                    Text("remove brush — select a shape with V first — [ ] resize (\(Int(model.brushSize)) px)")
                         .foregroundStyle(Color.accentColor)
                 } else {
-                    Text("subtract brush — erase from the selected shape — [ ] resize (\(Int(model.brushSize)) px)")
+                    Text("remove brush — paint to remove, B toggles back — [ ] resize (\(Int(model.brushSize)) px)")
                         .foregroundStyle(Color.accentColor)
                 }
             }

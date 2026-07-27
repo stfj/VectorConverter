@@ -190,8 +190,8 @@ nonisolated enum ShapeBrushGeometry {
 }
 
 private extension CGAffineTransform {
-    var determinant: CGFloat { a * d - b * c }
-    var isFinite: Bool {
+    nonisolated var determinant: CGFloat { a * d - b * c }
+    nonisolated var isFinite: Bool {
         a.isFinite && b.isFinite && c.isFinite &&
         d.isFinite && tx.isFinite && ty.isFinite
     }

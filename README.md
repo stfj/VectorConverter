@@ -10,10 +10,17 @@ use the thin two-column toolbar on the left, or:
 - v for the cursor tool
 - w for the magic wand lasso — drag around shapes, scroll to set the size cutoff so only small shapes stay selected
 - a to edit points — select a shape with v first, then click its anchor points and delete them (the shape stays connected)
-- b for the add brush and e for the subtract brush — select one shape first, then paint to merge into or cut out of it
+- b for the brush — press it again to toggle Add/Remove, or hold option while Add is selected to remove temporarily (e still selects Remove directly)
 - [ and ] to resize both brushes
 
 delete / command-z to delete shapes you dont want or undo that.
+
+the Colors control uses a logarithmic slider so the 4–12 range has plenty of
+room while still reaching palettes with thousands of colors. automatic color
+reduction uses OkLAB. when the resulting post-smash palette has fewer than 32
+colors, its Groups editor appears directly below the slider: drag colors or
+whole groups together, drag members back out, and click a group to edit it with
+a hex value or HSL controls.
 
 ## Third-party software
 

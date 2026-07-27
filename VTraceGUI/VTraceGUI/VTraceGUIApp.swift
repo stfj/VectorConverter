@@ -45,7 +45,7 @@ struct VTraceGUIApp: App {
                 Divider()
                 Button("Export SVG…") { model.exportSVG() }
                     .keyboardShortcut("e")
-                    .disabled(model.svgText == nil)
+                    .disabled(!model.canExportSVG)
             }
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { model.undoLastEdit() }
@@ -55,7 +55,7 @@ struct VTraceGUIApp: App {
             CommandGroup(replacing: .pasteboard) {
                 Button("Copy SVG") { model.copySVGToClipboard() }
                     .keyboardShortcut("c")
-                    .disabled(model.svgText == nil)
+                    .disabled(!model.canExportSVG)
                 Button("Paste Image") { model.pasteFromClipboard() }
                     .keyboardShortcut("v")
             }

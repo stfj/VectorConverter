@@ -12,8 +12,19 @@
 import Foundation
 import UniformTypeIdentifiers
 
+enum VTraceDocumentError: LocalizedError {
+    case unsupportedVersion(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedVersion(let version):
+            return "This design uses unsupported format version \(version)."
+        }
+    }
+}
+
 struct VTraceDocument: Codable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     /// Filename extension and panel type for `.vtrace` design files.
     static let fileExtension = "vtrace"
@@ -41,6 +52,9 @@ struct VTraceDocument: Codable {
     var pathOverrides: [Int: SimplificationSettings]
     var editedGeometry: [Int: String]
     var deletedPaths: [Int]
+    /// Optional keeps version-1 documents decodable. New saves always include
+    /// the user's manual palette groups and custom group colors.
+    var manualColorGroupRules: [ManualColorGroupRule]? = nil
 
     var originalPixelWidth: Int
     var originalPixelHeight: Int
@@ -48,12 +62,19 @@ struct VTraceDocument: Codable {
     var inputPixelHeight: Int
 
     func encoded() throws -> Data {
+        guard (1...Self.currentVersion).contains(version) else {
+            throw VTraceDocumentError.unsupportedVersion(version)
+        }
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         return try encoder.encode(self)
     }
 
     static func decoded(from data: Data) throws -> VTraceDocument {
-        try PropertyListDecoder().decode(VTraceDocument.self, from: data)
+        let document = try PropertyListDecoder().decode(VTraceDocument.self, from: data)
+        guard (1...currentVersion).contains(document.version) else {
+            throw VTraceDocumentError.unsupportedVersion(document.version)
+        }
+        return document
     }
 }
