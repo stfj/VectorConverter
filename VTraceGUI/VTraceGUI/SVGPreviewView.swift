@@ -1,6 +1,6 @@
 //
 //  SVGPreviewView.swift
-//  VTraceGUI
+//  Math
 //
 //  WKWebView-based preview: the source raster sits under the traced SVG,
 //  with vector selection, editing tools, and source-color isolation.

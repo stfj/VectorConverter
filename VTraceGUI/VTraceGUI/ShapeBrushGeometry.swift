@@ -1,6 +1,6 @@
 //
 //  ShapeBrushGeometry.swift
-//  VTraceGUI
+//  Math
 //
 //  Turns a round brush gesture into filled vector geometry, then combines it
 //  with one traced shape using Core Graphics' path boolean operations.

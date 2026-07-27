@@ -1,6 +1,6 @@
 //
-//  VTraceGUIApp.swift
-//  VTraceGUI
+//  MathApp.swift
+//  Math
 //
 //  Created by Zach Gage on 6/12/26.
 //
@@ -8,15 +8,15 @@
 import SwiftUI
 
 @main
-struct VTraceGUIApp: App {
+struct MathApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
     var body: some Scene {
-        // A single `Window` (not `WindowGroup`): opening a .vtrace from Finder
-        // can't spawn a second window — the delegate just loads the file into
-        // this one window's model.
-        Window("VTraceGUI", id: "main") {
+        // A single `Window` (not `WindowGroup`): opening a .math or legacy
+        // .vtrace file from Finder can't spawn a second window — the delegate
+        // just loads the file into this one window's model.
+        Window("Math", id: "main") {
             ContentView(model: model)
                 .frame(minWidth: 890, minHeight: 520)
                 .onAppear {
@@ -67,9 +67,9 @@ struct VTraceGUIApp: App {
 }
 
 /// Receives Finder document-open events (double-click, "Open With", `open`)
-/// for `.vtrace` files and forwards them to the window's model. URLs that
-/// arrive during a cold launch — before any window's `onAppear` registers a
-/// handler — are buffered and drained on registration.
+/// for `.math` and legacy `.vtrace` files and forwards them to the window's
+/// model. URLs that arrive during a cold launch — before any window's
+/// `onAppear` registers a handler — are buffered and drained on registration.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var openHandler: ((URL) -> Void)?
     private var pendingURLs: [URL] = []

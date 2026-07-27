@@ -1,6 +1,6 @@
 //
 //  ColorPanelView.swift
-//  VTraceGUI
+//  Math
 //
 //  Manual palette grouping and group-color editing for small traces.
 //

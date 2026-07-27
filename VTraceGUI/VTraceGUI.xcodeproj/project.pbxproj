@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		536F8B4A2FDC423F00AC03F5 /* VTraceGUI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = VTraceGUI.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		536F8B4A2FDC423F00AC03F5 /* Math.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Math.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -40,7 +40,7 @@
 		536F8B4B2FDC423F00AC03F5 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				536F8B4A2FDC423F00AC03F5 /* VTraceGUI.app */,
+				536F8B4A2FDC423F00AC03F5 /* Math.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,9 +48,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		536F8B492FDC423F00AC03F5 /* VTraceGUI */ = {
+		536F8B492FDC423F00AC03F5 /* Math */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 536F8B552FDC424000AC03F5 /* Build configuration list for PBXNativeTarget "VTraceGUI" */;
+			buildConfigurationList = 536F8B552FDC424000AC03F5 /* Build configuration list for PBXNativeTarget "Math" */;
 			buildPhases = (
 				536F8B462FDC423F00AC03F5 /* Sources */,
 				536F8B472FDC423F00AC03F5 /* Frameworks */,
@@ -64,11 +64,11 @@
 			fileSystemSynchronizedGroups = (
 				536F8B4C2FDC423F00AC03F5 /* VTraceGUI */,
 			);
-			name = VTraceGUI;
+			name = Math;
 			packageProductDependencies = (
 			);
-			productName = VTraceGUI;
-			productReference = 536F8B4A2FDC423F00AC03F5 /* VTraceGUI.app */;
+			productName = Math;
+			productReference = 536F8B4A2FDC423F00AC03F5 /* Math.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -100,7 +100,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				536F8B492FDC423F00AC03F5 /* VTraceGUI */,
+				536F8B492FDC423F00AC03F5 /* Math */,
 			);
 		};
 /* End PBXProject section */
@@ -291,8 +291,9 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = stfj.net.VTraceGUI;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = stfj.net.Math;
+				PRODUCT_MODULE_NAME = Math;
+				PRODUCT_NAME = Math;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -324,8 +325,9 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = stfj.net.VTraceGUI;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = stfj.net.Math;
+				PRODUCT_MODULE_NAME = Math;
+				PRODUCT_NAME = Math;
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -348,7 +350,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		536F8B552FDC424000AC03F5 /* Build configuration list for PBXNativeTarget "VTraceGUI" */ = {
+		536F8B552FDC424000AC03F5 /* Build configuration list for PBXNativeTarget "Math" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				536F8B562FDC424000AC03F5 /* Debug */,

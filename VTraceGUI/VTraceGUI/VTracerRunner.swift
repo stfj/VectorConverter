@@ -1,6 +1,6 @@
 //
 //  VTracerRunner.swift
-//  VTraceGUI
+//  Math
 //
 
 import Foundation

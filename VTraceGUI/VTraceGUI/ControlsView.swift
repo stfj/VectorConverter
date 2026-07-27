@@ -1,6 +1,6 @@
 //
 //  ControlsView.swift
-//  VTraceGUI
+//  Math
 //
 
 import SwiftUI

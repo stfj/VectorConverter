@@ -2,17 +2,22 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleDisplayName</key>
+	<string>Math</string>
+	<key>CFBundleName</key>
+	<string>Math</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
-			<string>VTrace Design</string>
+			<string>Math Design</string>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>
 			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
+				<string>stfj.net.Math.math</string>
 				<string>stfj.net.VTraceGUI.vtrace</string>
 			</array>
 		</dict>
@@ -21,9 +26,27 @@
 	<array>
 		<dict>
 			<key>UTTypeIdentifier</key>
+			<string>stfj.net.Math.math</string>
+			<key>UTTypeDescription</key>
+			<string>Math Design</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.content</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>math</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
 			<string>stfj.net.VTraceGUI.vtrace</string>
 			<key>UTTypeDescription</key>
-			<string>VTrace Design</string>
+			<string>Math Design (Legacy)</string>
 			<key>UTTypeConformsTo</key>
 			<array>
 				<string>public.data</string>

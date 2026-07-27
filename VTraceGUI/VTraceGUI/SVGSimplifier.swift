@@ -1,6 +1,6 @@
 //
 //  SVGSimplifier.swift
-//  VTraceGUI
+//  Math
 //
 //  Post-processing pass over vtracer's raw SVG output: re-fits each path
 //  with fewer cubic béziers using Schneider's curve-fitting algorithm

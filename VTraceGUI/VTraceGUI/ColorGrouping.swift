@@ -1,6 +1,6 @@
 //
 //  ColorGrouping.swift
-//  VTraceGUI
+//  Math
 //
 //  Shared model types for the small-palette manual grouping editor.
 //

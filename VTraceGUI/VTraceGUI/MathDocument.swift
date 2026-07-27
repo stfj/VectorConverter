@@ -1,9 +1,9 @@
 //
-//  VTraceDocument.swift
-//  VTraceGUI
+//  MathDocument.swift
+//  Math
 //
 //  The persisted form of a design — everything needed to reopen it and keep
-//  tweaking. Stored as a single binary-plist `.vtrace` file: the source image
+//  tweaking. Stored as a single binary-plist `.math` file: the source image
 //  (so vtracer/upscale settings can still be changed), the upscaled input that
 //  produced the trace, vtracer's raw SVG (so the per-shape edits below line up
 //  with stable path indices on load, with no re-trace), and every knob and edit.
@@ -12,7 +12,7 @@
 import Foundation
 import UniformTypeIdentifiers
 
-enum VTraceDocumentError: LocalizedError {
+enum MathDocumentError: LocalizedError {
     case unsupportedVersion(Int)
 
     var errorDescription: String? {
@@ -34,12 +34,21 @@ nonisolated struct ShapeOffset: Codable, Equatable, Sendable {
     static let zero = ShapeOffset(x: 0, y: 0)
 }
 
-struct VTraceDocument: Codable {
+struct MathDocument: Codable {
     static let currentVersion = 3
 
-    /// Filename extension and panel type for `.vtrace` design files.
-    static let fileExtension = "vtrace"
-    static let utType = UTType(filenameExtension: fileExtension)
+    /// Math writes `.math` files, but continues to open the earlier `.vtrace`
+    /// format so existing designs survive the product rename.
+    static let fileExtension = "math"
+    static let legacyFileExtension = "vtrace"
+    static let typeIdentifier = "stfj.net.Math.math"
+    static let legacyTypeIdentifier = "stfj.net.VTraceGUI.vtrace"
+    static let utType = UTType(exportedAs: typeIdentifier, conformingTo: .data)
+    static let legacyUTType = UTType(
+        exportedAs: legacyTypeIdentifier,
+        conformingTo: .data
+    )
+    static let readableTypes = [utType, legacyUTType]
 
     var version = currentVersion
     /// Used for the suggested name when exporting/saving.
@@ -77,17 +86,17 @@ struct VTraceDocument: Codable {
 
     func encoded() throws -> Data {
         guard (1...Self.currentVersion).contains(version) else {
-            throw VTraceDocumentError.unsupportedVersion(version)
+            throw MathDocumentError.unsupportedVersion(version)
         }
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
         return try encoder.encode(self)
     }
 
-    static func decoded(from data: Data) throws -> VTraceDocument {
-        let document = try PropertyListDecoder().decode(VTraceDocument.self, from: data)
+    static func decoded(from data: Data) throws -> MathDocument {
+        let document = try PropertyListDecoder().decode(MathDocument.self, from: data)
         guard (1...currentVersion).contains(document.version) else {
-            throw VTraceDocumentError.unsupportedVersion(document.version)
+            throw MathDocumentError.unsupportedVersion(document.version)
         }
         return document
     }

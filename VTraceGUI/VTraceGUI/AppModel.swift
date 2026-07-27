@@ -1,6 +1,6 @@
 //
 //  AppModel.swift
-//  VTraceGUI
+//  Math
 //
 
 import SwiftUI
@@ -180,8 +180,9 @@ final class AppModel {
     /// kick off the pipeline — used while restoring a saved design so a single
     /// post-process renders it instead of a re-trace per restored knob.
     private var suppressPipeline = false
-    /// The `.vtrace` file backing the current design, if it came from / was
-    /// saved to disk. ⌘S writes here; a new image clears it (untitled again).
+    /// The `.math` file backing the current design, if it came from / was
+    /// saved to disk. Legacy `.vtrace` files remain readable but are migrated
+    /// through Save As before Math writes them again.
     private(set) var currentDesignURL: URL?
     private let runner = VTracerRunner()
     private let upscaler = UpscaylRunner()
@@ -224,7 +225,7 @@ final class AppModel {
 
     init() {
         workDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VTraceGUI-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+            .appendingPathComponent("Math-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
         try? FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         installKeyMonitor()
         installFocusLossObservers()
@@ -1513,7 +1514,7 @@ final class AppModel {
         )
     }
 
-    // MARK: - Design files (save / load a .vtrace for later tweaking)
+    // MARK: - Design files (save / load a .math for later tweaking)
 
     /// A design can be saved once there's a trace to preserve.
     var canExportSVG: Bool {
@@ -1532,7 +1533,8 @@ final class AppModel {
     /// ⌘S: write back to the open file, or prompt if this design is untitled.
     func saveDesign() {
         guard canSaveDesign else { return }
-        if let url = currentDesignURL {
+        if let url = currentDesignURL,
+           url.pathExtension.caseInsensitiveCompare(MathDocument.fileExtension) == .orderedSame {
             writeDesign(to: url)
         } else {
             saveDesignAs()
@@ -1543,8 +1545,8 @@ final class AppModel {
     func saveDesignAs() {
         guard canSaveDesign else { return }
         let panel = NSSavePanel()
-        if let type = VTraceDocument.utType { panel.allowedContentTypes = [type] }
-        panel.nameFieldStringValue = sourceName + "." + VTraceDocument.fileExtension
+        panel.allowedContentTypes = [MathDocument.utType]
+        panel.nameFieldStringValue = sourceName + "." + MathDocument.fileExtension
         if panel.runModal() == .OK, let url = panel.url {
             writeDesign(to: url)
             currentDesignURL = url
@@ -1563,13 +1565,13 @@ final class AppModel {
 
     /// Snapshots everything needed to reopen and keep tweaking: the source +
     /// traced PNGs, vtracer's raw SVG, and all settings/edits.
-    private func buildDocument() -> VTraceDocument? {
+    private func buildDocument() -> MathDocument? {
         guard let rawSVG, hasImage,
               let originalData = try? Data(contentsOf: originalPNGURL),
               let inputData = try? Data(contentsOf: inputPNGURL) else { return nil }
         let original = originalPixelSize ?? .zero
         let input = sourcePixelSize ?? original
-        return VTraceDocument(
+        return MathDocument(
             sourceName: sourceName,
             originalPNG: originalData,
             inputPNG: inputData,
@@ -1591,7 +1593,7 @@ final class AppModel {
 
     func openDesignPanel() {
         let panel = NSOpenPanel()
-        if let type = VTraceDocument.utType { panel.allowedContentTypes = [type] }
+        panel.allowedContentTypes = MathDocument.readableTypes
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             loadDesign(from: url)
@@ -1603,9 +1605,9 @@ final class AppModel {
     /// on the exact path indices they were made against. The source image is
     /// restored too, so changing vtracer/upscale settings still works.
     func loadDesign(from url: URL) {
-        let document: VTraceDocument
+        let document: MathDocument
         do {
-            document = try VTraceDocument.decoded(from: Data(contentsOf: url))
+            document = try MathDocument.decoded(from: Data(contentsOf: url))
         } catch {
             errorMessage = "Couldn't open \(url.lastPathComponent): \(error.localizedDescription)"
             return
@@ -1672,7 +1674,10 @@ final class AppModel {
         hasImage = true
         isUpscaling = false
         upscaleProgress = 0
-        currentDesignURL = url
+        currentDesignURL =
+            url.pathExtension.caseInsensitiveCompare(MathDocument.fileExtension) == .orderedSame
+            ? url
+            : nil
         errorMessage = nil
         previewRevision += 1
         imageVersion += 1

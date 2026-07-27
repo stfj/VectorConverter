@@ -1,7 +1,11 @@
+# Math
+
 mac os x gui for converting raster images to vector
 
 paste or drag a bitmap in.
 command-c or command-s to get a svg out.
+saved editable designs use `.math`; existing `.vtrace` designs still open and
+are migrated to `.math` the next time they are saved.
 use the thin two-column toolbar on the left, or:
 
 - space to temporarily pan / hide control points

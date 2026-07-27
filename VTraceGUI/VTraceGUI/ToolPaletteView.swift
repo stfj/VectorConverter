@@ -1,6 +1,6 @@
 //
 //  ToolPaletteView.swift
-//  VTraceGUI
+//  Math
 //
 //  Compact, Photoshop-style two-column tool palette.
 //

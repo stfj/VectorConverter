@@ -1,6 +1,6 @@
 //
 //  UpscaylRunner.swift
-//  VTraceGUI
+//  Math
 //
 
 import Foundation
