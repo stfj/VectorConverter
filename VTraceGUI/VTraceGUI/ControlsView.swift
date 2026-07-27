@@ -114,7 +114,11 @@ struct ControlsView: View {
                     colorsSliderRow
                 }
 
-                ColorPanelView(model: model)
+                ColorPanelView(
+                    model: model,
+                    beginColorEdit: model.beginColorEdit,
+                    endColorEdit: model.endColorEdit
+                )
                     .disabled(!model.editingInteractionEnabled)
 
                 Spacer(minLength: 0)

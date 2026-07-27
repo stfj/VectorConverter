@@ -3,8 +3,7 @@
 //  VTraceGUI
 //
 //  WKWebView-based preview: the source raster sits under the traced SVG,
-//  and hovering a vector path highlights it in yellow (same behavior as
-//  the vtracer website).
+//  with vector selection, editing tools, and source-color isolation.
 //
 
 import SwiftUI
@@ -186,14 +185,18 @@ struct SVGPreviewView: NSViewRepresentable {
             coordinator.sentBrushFeedbackVersion = model.brushFeedbackVersion
             coordinator.run(webView, "clearBrushFeedback()")
         }
-        if coordinator.sentHighlightedColorHex != model.highlightedColorHex {
-            coordinator.sentHighlightedColorHex = model.highlightedColorHex
-            if let hex = model.highlightedColorHex,
-               let data = try? JSONEncoder().encode(hex),
+        let lockedMembers = model.effectiveLockedMemberHexes
+        if coordinator.sentLockedMembers != lockedMembers ||
+            coordinator.sentColorLockRevision != model.colorLockRevision {
+            coordinator.sentLockedMembers = lockedMembers
+            coordinator.sentColorLockRevision = model.colorLockRevision
+            let members = (lockedMembers ?? []).sorted()
+            if let data = try? JSONEncoder().encode(members),
                let json = String(data: data, encoding: .utf8) {
-                coordinator.run(webView, "setHighlightedColor(\(json))")
-            } else {
-                coordinator.run(webView, "setHighlightedColor(null)")
+                coordinator.run(
+                    webView,
+                    "setColorLock(\(json), \(model.colorLockRevision))"
+                )
             }
         }
         if coordinator.sentSelection != model.selectedPathIndex {
@@ -226,7 +229,8 @@ struct SVGPreviewView: NSViewRepresentable {
         var sentBrushEnabled = true
         var sentMoveEnabled = true
         var sentBrushFeedbackVersion = 0
-        var sentHighlightedColorHex: String?
+        var sentLockedMembers: Set<String>?
+        var sentColorLockRevision = -1
         fileprivate var sentPaletteState: PreviewPaletteState?
         var sentPreviewRevision = 0
         var sentSelection: Int?
@@ -259,39 +263,50 @@ struct SVGPreviewView: NSViewRepresentable {
             if message.name == "pathClick",
                let payload = message.body as? [String: Any],
                let index = number(payload["index"]).map(Int.init),
-               let revision = number(payload["previewRevision"]).map(Int.init) {
-                // The page already cleared its lasso; mirror that so the
-                // model sync doesn't echo a stale state back.
-                sentLasso = []
+               let revision = number(payload["previewRevision"]).map(Int.init),
+               let colorLockRevision = number(payload["colorLockRevision"]).map(Int.init) {
                 Task { @MainActor in
                     guard revision == model.previewRevision,
+                          colorLockRevision == model.colorLockRevision,
                           model.editingInteractionEnabled else { return }
-                    model.selectPath(index >= 0 ? index : nil)
+                    // The page already cleared its lasso; mirror that so the
+                    // model sync doesn't echo a stale state back.
+                    self.sentLasso = []
+                    model.selectPath(index >= 0 ? index : nil,
+                                     colorLockRevision: colorLockRevision)
                 }
             } else if message.name == "lassoSelect",
                       let payload = message.body as? [String: Any],
                       let values = payload["indices"] as? [Any],
-                      let revision = number(payload["previewRevision"]).map(Int.init) {
-                // Pre-set the sent state so updateNSView doesn't echo this
-                // selection straight back and clobber the page's lasso.
+                      let revision = number(payload["previewRevision"]).map(Int.init),
+                      let colorLockRevision = number(payload["colorLockRevision"]).map(Int.init) {
                 let indices = values.compactMap { number($0).map(Int.init) }
                 let set = Set(indices)
-                sentLasso = set
-                sentSelection = nil
                 Task { @MainActor in
                     guard revision == model.previewRevision,
+                          colorLockRevision == model.colorLockRevision,
                           model.editingInteractionEnabled else { return }
-                    model.setLassoSelection(set)
+                    // Pre-set the sent state so updateNSView doesn't echo this
+                    // selection straight back and clobber the page's lasso.
+                    self.sentLasso = set
+                    self.sentSelection = nil
+                    model.setLassoSelection(set,
+                                            colorLockRevision: colorLockRevision)
                 }
             } else if message.name == "anchorSelect",
                       let payload = message.body as? [String: Any],
+                      let pathIndex = number(payload["pathIndex"]).map(Int.init),
                       let values = payload["indices"] as? [Any],
-                      let revision = number(payload["previewRevision"]).map(Int.init) {
+                      let revision = number(payload["previewRevision"]).map(Int.init),
+                      let colorLockRevision = number(payload["colorLockRevision"]).map(Int.init) {
                 let indices = values.compactMap { number($0).map(Int.init) }
                 Task { @MainActor in
                     guard revision == model.previewRevision,
+                          colorLockRevision == model.colorLockRevision,
                           model.editingInteractionEnabled else { return }
-                    model.setSelectedAnchors(Set(indices))
+                    model.setSelectedAnchors(Set(indices),
+                                             forPath: pathIndex,
+                                             colorLockRevision: colorLockRevision)
                 }
             } else if message.name == "brushStroke",
                       let payload = message.body as? [String: Any],
@@ -300,6 +315,7 @@ struct SVGPreviewView: NSViewRepresentable {
                       let operationName = payload["operation"] as? String,
                       let operation = ShapeBrushOperation(rawValue: operationName),
                       let previewRevision = number(payload["previewRevision"]).map(Int.init),
+                      let colorLockRevision = number(payload["colorLockRevision"]).map(Int.init),
                       let points = points(payload["points"]),
                       let transform = transform(payload["localToRoot"]) {
                 Task { @MainActor in
@@ -308,19 +324,22 @@ struct SVGPreviewView: NSViewRepresentable {
                                            diameter: diameter,
                                            pathTransform: transform,
                                            operation: operation,
-                                           previewRevision: previewRevision)
+                                           previewRevision: previewRevision,
+                                           colorLockRevision: colorLockRevision)
                 }
             } else if message.name == "shapeMove",
                       let payload = message.body as? [String: Any],
                       let pathIndex = number(payload["pathIndex"]).map(Int.init),
                       let deltaX = number(payload["deltaX"]),
                       let deltaY = number(payload["deltaY"]),
-                      let previewRevision = number(payload["previewRevision"]).map(Int.init) {
+                      let previewRevision = number(payload["previewRevision"]).map(Int.init),
+                      let colorLockRevision = number(payload["colorLockRevision"]).map(Int.init) {
                 Task { @MainActor in
                     model.movePath(pathIndex,
                                    byX: deltaX,
                                    y: deltaY,
-                                   previewRevision: previewRevision)
+                                   previewRevision: previewRevision,
+                                   colorLockRevision: colorLockRevision)
                 }
             }
         }
@@ -453,6 +472,7 @@ struct SVGPreviewView: NSViewRepresentable {
         }
         #overlay svg.color-highlight-active > path:not(.color-highlight) {
             opacity: 0.16;
+            pointer-events: none;
         }
         #overlay svg.color-highlight-active > path.color-highlight {
             opacity: 1 !important;
@@ -538,7 +558,8 @@ struct SVGPreviewView: NSViewRepresentable {
         const raster = document.getElementById('raster');
         const overlay = document.getElementById('overlay');
         const SVGNS = 'http://www.w3.org/2000/svg';
-        let highlightedColor = null;
+        let lockedSourceColors = new Set();
+        let colorLockRevision = 0;
         let automaticPathColors = [];
         let manualColorMapping = {};
 
@@ -584,7 +605,7 @@ struct SVGPreviewView: NSViewRepresentable {
             if (redrawLiveBrush) drawBrushGesture();
             updateBrushCursor(lastPointerX, lastPointerY);
             applyManualColors();
-            applyColorHighlight();
+            applyColorLock();
         }
 
         function normalizedHex(value) {
@@ -604,36 +625,110 @@ struct SVGPreviewView: NSViewRepresentable {
                 const replacement = normalizedHex(manualColorMapping[source]) || source;
                 path.setAttribute('fill', replacement);
             });
-            applyColorHighlight();
+            applyColorLock();
         }
 
         function setManualColors(state) {
-            automaticPathColors = Array.isArray(state && state.pathColors)
+            const nextPathColors = Array.isArray(state && state.pathColors)
                 ? state.pathColors : [];
+            const sourceColorsChanged =
+                nextPathColors.length !== automaticPathColors.length ||
+                nextPathColors.some((value, index) =>
+                    normalizedHex(value) !== normalizedHex(automaticPathColors[index]));
+            automaticPathColors = nextPathColors;
             manualColorMapping = state && typeof state.mapping === 'object'
                 && state.mapping !== null ? state.mapping : {};
+            if (sourceColorsChanged) reconcileSelectionForColorLock();
             applyManualColors();
+            if (sourceColorsChanged) rebuildPoints();
         }
 
-        function applyColorHighlight() {
+        function pathAllowedByColorLock(path, index) {
+            if (lockedSourceColors.size === 0) return true;
+            if (!path || index < 0) return false;
+            const source = normalizedHex(automaticPathColors[index]);
+            return source !== null && lockedSourceColors.has(source);
+        }
+
+        function interactivePathAt(index) {
+            const path = shapePaths()[index];
+            if (!path || path.style.display === 'none' ||
+                !(path.getAttribute('d') || '').trim()) {
+                return null;
+            }
+            return pathAllowedByColorLock(path, index) ? path : null;
+        }
+
+        function applyColorLock() {
             const s = overlay.querySelector('svg');
             if (!s) return;
-            const wanted = normalizedHex(highlightedColor);
-            let matchCount = 0;
-            shapePaths().forEach(path => {
+            const isLocked = lockedSourceColors.size > 0;
+            shapePaths().forEach((path, index) => {
                 const isVisible = path.style.display !== 'none' &&
                     !!(path.getAttribute('d') || '').trim();
-                const matches = isVisible && wanted !== null &&
-                    normalizedHex(path.getAttribute('fill')) === wanted;
+                const matches = isLocked && isVisible &&
+                    pathAllowedByColorLock(path, index);
                 path.classList.toggle('color-highlight', matches);
-                if (matches) matchCount += 1;
             });
-            s.classList.toggle('color-highlight-active', matchCount > 0);
+            // Keep the lock visibly active even if a stale palette has no
+            // matching paths; silently unlocking would make unrelated paths
+            // interactive during the palette/SVG handoff.
+            s.classList.toggle('color-highlight-active', isLocked);
         }
 
-        function setHighlightedColor(hex) {
-            highlightedColor = normalizedHex(hex);
-            applyColorHighlight();
+        function cancelInteractionsForColorLockChange() {
+            clearBrushFeedback();
+            if (shapeDrag) cancelShapeDrag(true);
+            clearLasso();
+            clearMarquee();
+            marquee = null;
+            marqueeMoved = false;
+            suppressAnchorClick = false;
+        }
+
+        function reconcileSelectionForColorLock() {
+            const previous = selectedIndices.slice();
+            const seen = new Set();
+            selectedIndices = selectedIndices.filter(index => {
+                if (!Number.isInteger(index) || seen.has(index) ||
+                    !interactivePathAt(index)) {
+                    return false;
+                }
+                seen.add(index);
+                return true;
+            });
+            candidates = candidates.filter(candidate =>
+                interactivePathAt(candidate.idx) !== null);
+            if (!selectedIndices.length) wandMode = false;
+            const selectionChanged =
+                previous.length !== selectedIndices.length ||
+                previous.some((value, index) => value !== selectedIndices[index]);
+            if (selectionChanged || selectedIndices.length !== 1) {
+                selectedAnchorSet.clear();
+                anchorNearest = null;
+            }
+        }
+
+        function setColorLock(members, revision) {
+            const nextMembers = new Set(
+                (Array.isArray(members) ? members : [])
+                    .map(normalizedHex)
+                    .filter(value => value !== null)
+            );
+            const nextRevision = Number.isFinite(revision)
+                ? revision : colorLockRevision;
+            const membersChanged =
+                nextMembers.size !== lockedSourceColors.size ||
+                Array.from(nextMembers).some(value => !lockedSourceColors.has(value));
+            if (nextRevision !== colorLockRevision || membersChanged) {
+                cancelInteractionsForColorLockChange();
+            }
+            lockedSourceColors = nextMembers;
+            colorLockRevision = nextRevision;
+            reconcileSelectionForColorLock();
+            applyColorLock();
+            rebuildPoints();
+            updateBrushCursor(lastPointerX, lastPointerY);
         }
 
         function setConverting(on) {
@@ -778,10 +873,7 @@ struct SVGPreviewView: NSViewRepresentable {
 
         function selectedBrushPath() {
             if (wandMode || selectedIndices.length !== 1) return null;
-            const paths = shapePaths();
-            const path = paths[selectedIndices[0]];
-            if (!path || path.style.display === 'none') return null;
-            return path;
+            return interactivePathAt(selectedIndices[0]);
         }
 
         function activeSVG() {
@@ -943,6 +1035,7 @@ struct SVGPreviewView: NSViewRepresentable {
                         operation: operation,
                         diameter: brushSize,
                         previewRevision: previewRevision,
+                        colorLockRevision: colorLockRevision,
                         points: points,
                         localToRoot: [matrix.a, matrix.b, matrix.c,
                                       matrix.d, matrix.e, matrix.f]
@@ -988,7 +1081,7 @@ struct SVGPreviewView: NSViewRepresentable {
         var suppressShapeClick = false;
 
         function selectShapeLocally(index) {
-            selectedIndices = index >= 0 ? [index] : [];
+            selectedIndices = interactivePathAt(index) ? [index] : [];
             wandMode = false;
             selectedAnchorSet.clear();
             anchorNearest = null;
@@ -1002,7 +1095,7 @@ struct SVGPreviewView: NSViewRepresentable {
             const index = paths.indexOf(e.target);
             const path = index >= 0 ? paths[index] : null;
             const start = path ? clientToRoot(e.clientX, e.clientY) : null;
-            if (!path || path.style.display === 'none' || !start) return false;
+            if (!path || !interactivePathAt(index) || !start) return false;
 
             selectShapeLocally(index);
             // Selection happens on press so dragging a previously-unselected
@@ -1011,7 +1104,8 @@ struct SVGPreviewView: NSViewRepresentable {
             try {
                 window.webkit.messageHandlers.pathClick.postMessage({
                     index: index,
-                    previewRevision: previewRevision
+                    previewRevision: previewRevision,
+                    colorLockRevision: colorLockRevision
                 });
             } catch (err) {}
             shapeDrag = {
@@ -1072,7 +1166,8 @@ struct SVGPreviewView: NSViewRepresentable {
                         pathIndex: completed.pathIndex,
                         deltaX: completed.deltaX,
                         deltaY: completed.deltaY,
-                        previewRevision: previewRevision
+                        previewRevision: previewRevision,
+                        colorLockRevision: colorLockRevision
                     });
                 } catch (err) {
                     if (completed.path.isConnected) {
@@ -1312,13 +1407,16 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         function applyThreshold() {
-            selectedIndices = candidates.filter(c => c.size <= threshold).map(c => c.idx);
-            wandMode = true;
+            selectedIndices = candidates
+                .filter(c => c.size <= threshold && interactivePathAt(c.idx))
+                .map(c => c.idx);
+            wandMode = selectedIndices.length > 0;
             rebuildPoints();
             try {
                 window.webkit.messageHandlers.lassoSelect.postMessage({
                     indices: selectedIndices,
-                    previewRevision: previewRevision
+                    previewRevision: previewRevision,
+                    colorLockRevision: colorLockRevision
                 });
             } catch (err) {}
         }
@@ -1329,8 +1427,7 @@ struct SVGPreviewView: NSViewRepresentable {
             drawLasso(true);
             candidates = [];
             shapePaths().forEach((p, idx) => {
-                if (!p.getAttribute('d')) return;       // deleted-shape placeholder
-                if (p.style.display === 'none') return; // optimistically hidden delete
+                if (!interactivePathAt(idx)) return;
                 const r = p.getBoundingClientRect();
                 if (!pointInPolygon(r.left + r.width / 2, r.top + r.height / 2, lassoPts)) return;
                 candidates.push({ idx: idx, size: Math.max(shapeArea(p), 1e-6) });
@@ -1392,7 +1489,7 @@ struct SVGPreviewView: NSViewRepresentable {
         function setSelected(idx) {
             // A deselect from the app must not clobber a live wand selection.
             if (idx < 0 && selectedIndices.length > 1) return;
-            selectedIndices = idx >= 0 ? [idx] : [];
+            selectedIndices = interactivePathAt(idx) ? [idx] : [];
             wandMode = false;
             selectedAnchorSet.clear();   // different shape → anchors no longer apply
             anchorNearest = null;
@@ -1401,15 +1498,23 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         function reportAnchors() {
+            const pathIndex = selectedIndices.length === 1 &&
+                interactivePathAt(selectedIndices[0])
+                ? selectedIndices[0] : -1;
+            if (pathIndex < 0) selectedAnchorSet.clear();
             try {
                 window.webkit.messageHandlers.anchorSelect.postMessage({
+                    pathIndex: pathIndex,
                     indices: Array.from(selectedAnchorSet),
-                    previewRevision: previewRevision
+                    previewRevision: previewRevision,
+                    colorLockRevision: colorLockRevision
                 });
             } catch (err) {}
         }
 
         function toggleAnchor(i) {
+            if (selectedIndices.length !== 1 ||
+                !interactivePathAt(selectedIndices[0])) return;
             if (selectedAnchorSet.has(i)) selectedAnchorSet.delete(i);
             else selectedAnchorSet.add(i);
             reportAnchors();
@@ -1451,6 +1556,8 @@ struct SVGPreviewView: NSViewRepresentable {
         // Select every anchor dot whose screen position falls in the box.
         // Plain drag replaces the selection; shift-drag adds to it.
         function applyMarquee(x0, y0, x1, y1, additive) {
+            if (selectedIndices.length !== 1 ||
+                !interactivePathAt(selectedIndices[0])) return;
             const xa = Math.min(x0, x1), ya = Math.min(y0, y1);
             const xb = Math.max(x0, x1), yb = Math.max(y0, y1);
             if (!additive) selectedAnchorSet.clear();
@@ -1464,9 +1571,15 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         function setLassoSelection(arr) {
-            selectedIndices = arr;
-            wandMode = arr.length > 0;
-            if (!arr.length) clearLasso();
+            const seen = new Set();
+            selectedIndices = (Array.isArray(arr) ? arr : []).filter(index => {
+                if (!Number.isInteger(index) || seen.has(index) ||
+                    !interactivePathAt(index)) return false;
+                seen.add(index);
+                return true;
+            });
+            wandMode = selectedIndices.length > 0;
+            if (!selectedIndices.length) clearLasso();
             rebuildPoints();
         }
 
@@ -1476,8 +1589,9 @@ struct SVGPreviewView: NSViewRepresentable {
             shapePaths().forEach((p, idx) => {
                 p.style.display = dead.has(idx) ? 'none' : '';
             });
+            reconcileSelectionForColorLock();
             rebuildPoints();
-            applyColorHighlight();
+            applyColorLock();
         }
 
         document.addEventListener('click', e => {
@@ -1501,12 +1615,14 @@ struct SVGPreviewView: NSViewRepresentable {
             }
             if (tool === 'wand') return;   // clicks are lasso strokes here
             const paths = shapePaths();
-            const idx = paths.indexOf(e.target);
+            const candidate = paths.indexOf(e.target);
+            const idx = interactivePathAt(candidate) ? candidate : -1;
             selectShapeLocally(idx);
             try {
                 window.webkit.messageHandlers.pathClick.postMessage({
                     index: idx,
-                    previewRevision: previewRevision
+                    previewRevision: previewRevision,
+                    colorLockRevision: colorLockRevision
                 });
             } catch (err) {}
         });
@@ -1579,6 +1695,22 @@ struct SVGPreviewView: NSViewRepresentable {
             const old = s.querySelector('#ctrlpts');
             if (old) old.remove();
             const paths = shapePaths();
+            const priorSelection = selectedIndices.slice();
+            const seen = new Set();
+            selectedIndices = selectedIndices.filter(index => {
+                if (!Number.isInteger(index) || seen.has(index) ||
+                    !interactivePathAt(index)) return false;
+                seen.add(index);
+                return true;
+            });
+            if (selectedIndices.length !== 1 ||
+                priorSelection.length !== selectedIndices.length ||
+                priorSelection.some((value, index) =>
+                    value !== selectedIndices[index])) {
+                selectedAnchorSet.clear();
+                anchorNearest = null;
+            }
+            if (!selectedIndices.length) wandMode = false;
             paths.forEach(p => {
                 p.classList.remove('wandsel');
                 p.classList.remove('brush-target');
@@ -1588,13 +1720,13 @@ struct SVGPreviewView: NSViewRepresentable {
                 // Wand selections highlight whole shapes, not control points.
                 selectedIndices.forEach(idx => {
                     const p = paths[idx];
-                    if (p && p.getAttribute('d')) p.classList.add('wandsel');
+                    if (interactivePathAt(idx)) p.classList.add('wandsel');
                 });
                 return;
             }
             if (isBrushTool()) {
                 const target = paths[selectedIndices[0]];
-                if (target && target.style.display !== 'none') {
+                if (target && interactivePathAt(selectedIndices[0])) {
                     target.classList.add('brush-target');
                 }
                 return;
@@ -1603,6 +1735,7 @@ struct SVGPreviewView: NSViewRepresentable {
             selectedIndices.forEach(idx => {
                 if (idx < 0 || idx >= paths.length) return;
                 const p = paths[idx];
+                if (!interactivePathAt(idx)) return;
                 parseD(p.getAttribute('d') || '', pathLocalToRoot(p), out);
             });
             const g = document.createElementNS(SVGNS, 'g');

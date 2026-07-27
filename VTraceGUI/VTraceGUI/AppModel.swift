@@ -70,12 +70,14 @@ final class AppModel {
     /// also hides the selected shape's control points.
     private(set) var spaceDown = false
 
-    /// True while Space is held outside text entry or a modal panel. Palette
-    /// hover uses this separately from `spaceDown`, since temporary panning
-    /// remains limited to keyboard focus inside the preview.
-    private(set) var colorPreviewSpaceDown = false
-    /// Remembers when palette preview consumed Space-down, so its matching
-    /// key-up is also swallowed even if the pointer leaves the tile first.
+    /// Source-member anchors for the persistent UI lock and temporary
+    /// Space-hover lock. Anchoring to an automatic palette member (rather than
+    /// a presentation group ID) lets a lock follow that color through regroup
+    /// and recolor operations.
+    private var lockedColorAnchorHex: String?
+    private var temporaryLockedColorAnchorHex: String?
+    /// Remembers when a temporary palette lock consumed Space-down, so its
+    /// matching key-up is swallowed even if the pointer leaves the tile first.
     private var paletteSpaceConsumesKey = false
 
     /// True while ⌥ is held (zoom tool shows the zoom-out cursor).
@@ -114,15 +116,21 @@ final class AppModel {
     /// Raw-SVG indices of shapes the user deleted. Cleared on re-trace.
     private(set) var deletedPaths: Set<Int> = []
 
-    /// Reversible edit history for ⌘Z. A wand delete restores its whole group;
-    /// point and brush edits restore geometry, and moves restore the prior
-    /// separately-stored translation for one shape.
+    /// Reversible edit history. Each action describes the state to restore, so
+    /// applying it can capture and return its exact inverse for redo.
     private enum EditAction {
-        case deleteShapes([Int])
-        case changeGeometry(path: Int, previous: String?)
-        case moveShape(path: Int, previous: ShapeOffset?)
+        case setShapesDeleted([Int], Bool)
+        case setGeometry(path: Int, value: String?)
+        case setShapeOffset(path: Int, value: ShapeOffset?)
+        case setManualColorGroups([ManualColorGroupRule])
     }
     private var undoStack: [EditAction] = []
+    private var redoStack: [EditAction] = []
+    /// Color sliders publish continuously for live preview. The first actual
+    /// change in one open editor records the baseline; subsequent ticks remain
+    /// part of that same undo transaction.
+    private var activeColorEditGroupID: String?
+    private var activeColorEditRecordedHistory = false
 
     /// Bumped each time a new source image is loaded; the preview keys off this.
     private(set) var imageVersion = 0
@@ -150,9 +158,12 @@ final class AppModel {
     /// changes are applied against these in the web view for immediate feedback.
     private(set) var automaticPathColors: [String?] = []
     private var manualColorGroupRules: [ManualColorGroupRule] = []
-    /// The palette group whose rendered regions are emphasized in the preview.
-    /// This is presentation-only state and is intentionally not persisted.
+    /// The palette tile currently under the pointer. Locks are separate, so a
+    /// temporary Space lock survives the matching hover exit until key-up.
     private(set) var highlightedColorGroupID: String?
+    /// Monotonic token attached to every preview-originated shape mutation.
+    /// A lock change invalidates gestures that began under a different filter.
+    private(set) var colorLockRevision = 0
     private(set) var lastConversionTime: TimeInterval?
     var errorMessage: String?
 
@@ -246,7 +257,10 @@ final class AppModel {
 
     private func clearTransientKeyState() {
         spaceDown = false
-        colorPreviewSpaceDown = false
+        if temporaryLockedColorAnchorHex != nil {
+            temporaryLockedColorAnchorHex = nil
+            colorLockDidChange()
+        }
         paletteSpaceConsumesKey = false
         altDown = false
     }
@@ -262,18 +276,42 @@ final class AppModel {
         guard NSApp.modalWindow == nil,
               let window = event.window,
               !(window is NSPanel) else {
-            colorPreviewSpaceDown = false
+            if temporaryLockedColorAnchorHex != nil {
+                temporaryLockedColorAnchorHex = nil
+                colorLockDidChange()
+            }
             paletteSpaceConsumesKey = false
             return event
         }
         if window.firstResponder is NSTextView {
-            colorPreviewSpaceDown = false
+            if temporaryLockedColorAnchorHex != nil {
+                temporaryLockedColorAnchorHex = nil
+                colorLockDidChange()
+            }
             paletteSpaceConsumesKey = false
             return event
         }
 
-        // Tool switching and brush sizing. No command/option/control modifiers,
-        // so app shortcuts such as ⌘Z and ⌘E keep their normal meanings.
+        // WKWebView can swallow menu key equivalents. Keep native text-field
+        // history above, but handle canvas history locally and support both the
+        // standard ⌘⇧Z and the requested ⌃⇧Z redo chord.
+        if event.type == .keyDown,
+           !event.isARepeat,
+           event.charactersIgnoringModifiers?.lowercased() == "z" {
+            let modifiers = event.modifierFlags
+                .intersection([.command, .option, .control, .shift])
+            if modifiers == [.command] {
+                undoLastEdit()
+                return nil
+            }
+            if modifiers == [.command, .shift] ||
+                modifiers == [.control, .shift] {
+                redoLastEdit()
+                return nil
+            }
+        }
+
+        // Tool switching and brush sizing. No command/option/control modifiers.
         if event.type == .keyDown,
            event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
            let key = event.charactersIgnoringModifiers?.lowercased() {
@@ -320,27 +358,36 @@ final class AppModel {
         }
 
         switch event.keyCode {
-        case 49: // space: hand tool while held (and hide control points)
-            let shouldConsumeForPalette: Bool
+        case 49: // space: temporary palette lock, otherwise hand while held
             if event.type == .keyDown {
-                if !event.isARepeat { colorPreviewSpaceDown = true }
-                if highlightedColorGroupID != nil {
-                    paletteSpaceConsumesKey = true
+                if !event.isARepeat {
+                    temporaryLockedColorAnchorHex = nil
+                    paletteSpaceConsumesKey = captureTemporaryColorLock()
+                    if paletteSpaceConsumesKey {
+                        // The preview can remain first responder while the
+                        // pointer is over the sidebar. A palette lock wins over
+                        // Space-to-pan for this entire key gesture.
+                        spaceDown = false
+                    }
                 }
-                shouldConsumeForPalette = paletteSpaceConsumesKey
-            } else {
-                colorPreviewSpaceDown = false
-                shouldConsumeForPalette = paletteSpaceConsumesKey
-                paletteSpaceConsumesKey = false
-            }
-            guard previewHasKeyboardFocus else {
-                return shouldConsumeForPalette ? nil : event
-            }
-            if event.type == .keyDown {
+                if paletteSpaceConsumesKey { return nil }
+                guard previewHasKeyboardFocus else { return event }
                 if !event.isARepeat { spaceDown = true }
-            } else {
-                spaceDown = false
+                return nil
             }
+
+            let consumedByPalette = paletteSpaceConsumesKey
+            if temporaryLockedColorAnchorHex != nil {
+                temporaryLockedColorAnchorHex = nil
+                colorLockDidChange()
+            }
+            paletteSpaceConsumesKey = false
+            if consumedByPalette {
+                spaceDown = false
+                return nil
+            }
+            guard previewHasKeyboardFocus else { return event }
+            spaceDown = false
             return nil
         case 51, 117: // backspace, forward delete
             guard event.type == .keyDown else { return event }
@@ -369,16 +416,27 @@ final class AppModel {
             return
         }
         if !lassoSelection.isEmpty {
-            let group = lassoSelection.sorted()
+            let group = lassoSelection
+                .filter { colorLockAllowsPath($0) && !deletedPaths.contains($0) }
+                .sorted()
+            guard !group.isEmpty else {
+                lassoSelection = []
+                return
+            }
             deletedPaths.formUnion(group)
-            undoStack.append(.deleteShapes(group))
+            recordEdit(.setShapesDeleted(group, false))
             lassoSelection = []
             schedulePostProcess()
             return
         }
-        guard let index = selectedPathIndex else { return }
+        guard let index = selectedPathIndex,
+              colorLockAllowsPath(index),
+              !deletedPaths.contains(index) else {
+            sanitizeSelectionForColorLock()
+            return
+        }
         deletedPaths.insert(index)
-        undoStack.append(.deleteShapes([index]))
+        recordEdit(.setShapesDeleted([index], false))
         selectedPathIndex = nil
         schedulePostProcess()
     }
@@ -397,12 +455,14 @@ final class AppModel {
             errorMessage = "Wait for the brush stroke to finish before editing points."
             return
         }
-        guard let shape = selectedPathIndex, !selectedAnchors.isEmpty,
+        guard let shape = selectedPathIndex,
+              colorLockAllowsPath(shape),
+              !selectedAnchors.isEmpty,
               let displayed = currentPathD(shape) else { selectedAnchors = []; return }
         let edited = SVGSimplifier.removeAnchors(displayed, selectedAnchors)
         selectedAnchors = []
         guard edited != displayed else { return }
-        undoStack.append(.changeGeometry(path: shape, previous: editedGeometry[shape]))
+        recordEdit(.setGeometry(path: shape, value: editedGeometry[shape]))
         editedGeometry[shape] = edited
         schedulePostProcess()
     }
@@ -432,7 +492,20 @@ final class AppModel {
         self.svgText = output as String
     }
 
-    func setSelectedAnchors(_ indices: Set<Int>) {
+    func setSelectedAnchors(_ indices: Set<Int>,
+                            forPath pathIndex: Int? = nil,
+                            colorLockRevision messageLockRevision: Int? = nil) {
+        if let messageLockRevision,
+           messageLockRevision != colorLockRevision {
+            return
+        }
+        let pathIndex = pathIndex ?? selectedPathIndex
+        guard let pathIndex,
+              selectedPathIndex == pathIndex,
+              colorLockAllowsPath(pathIndex) else {
+            selectedAnchors = []
+            return
+        }
         selectedAnchors = indices
     }
 
@@ -457,8 +530,12 @@ final class AppModel {
             !isConverting
     }
 
-    var canUndoDeletion: Bool {
+    var canUndo: Bool {
         isBrushProcessing || (editingInteractionEnabled && !undoStack.isEmpty)
+    }
+
+    var canRedo: Bool {
+        editingInteractionEnabled && !isBrushProcessing && !redoStack.isEmpty
     }
 
     func undoLastEdit() {
@@ -472,23 +549,76 @@ final class AppModel {
             return
         }
         guard let action = undoStack.popLast() else { return }
-        switch action {
-        case .deleteShapes(let group):
-            deletedPaths.subtract(group)
-            if group.count == 1 {
-                selectedPathIndex = group[0]
-                lassoSelection = []
-            } else {
-                setLassoSelection(Set(group))
-            }
-        case .changeGeometry(let path, let previous):
-            editedGeometry[path] = previous
-            selectPath(path)
-        case .moveShape(let path, let previous):
-            pathOffsets[path] = previous
-            selectPath(path)
-        }
+        activeColorEditRecordedHistory = false
+        redoStack.append(applyHistoryAction(action))
         schedulePostProcess()
+    }
+
+    func redoLastEdit() {
+        guard !isBrushProcessing else {
+            errorMessage = "Wait for the brush stroke to finish before redoing an edit."
+            return
+        }
+        guard editingInteractionEnabled else {
+            errorMessage = "Wait for the current image update before redoing an edit."
+            return
+        }
+        guard let action = redoStack.popLast() else { return }
+        activeColorEditRecordedHistory = false
+        undoStack.append(applyHistoryAction(action))
+        schedulePostProcess()
+    }
+
+    private func recordEdit(_ action: EditAction) {
+        undoStack.append(action)
+        redoStack = []
+    }
+
+    private func resetEditHistory() {
+        undoStack = []
+        redoStack = []
+        endColorEdit()
+    }
+
+    /// Restores one state and returns the inverse captured from the live model.
+    private func applyHistoryAction(_ action: EditAction) -> EditAction {
+        switch action {
+        case .setShapesDeleted(let paths, let shouldDelete):
+            let wereDeleted = paths.allSatisfy { deletedPaths.contains($0) }
+            if shouldDelete {
+                deletedPaths.formUnion(paths)
+                selectedPathIndex = nil
+                lassoSelection.subtract(paths)
+                selectedAnchors = []
+            } else {
+                deletedPaths.subtract(paths)
+                if paths.count == 1 {
+                    selectPath(paths[0])
+                } else {
+                    setLassoSelection(Set(paths))
+                }
+            }
+            return .setShapesDeleted(paths, wereDeleted)
+
+        case .setGeometry(let path, let value):
+            let current = editedGeometry[path]
+            editedGeometry[path] = value
+            selectPath(path)
+            return .setGeometry(path: path, value: current)
+
+        case .setShapeOffset(let path, let value):
+            let current = pathOffsets[path]
+            pathOffsets[path] = value
+            selectPath(path)
+            return .setShapeOffset(path: path, value: current)
+
+        case .setManualColorGroups(let rules):
+            let current = manualColorGroupRules
+            manualColorGroupRules = rules
+            sanitizeManualColorGroups()
+            outputColorCount = Set(manualColorGroups.map(\.colorHex)).count
+            return .setManualColorGroups(current)
+        }
     }
 
     /// Cancels exactly the newest uncommitted gesture. Later queued gestures
@@ -549,12 +679,16 @@ final class AppModel {
                           diameter: Double,
                           pathTransform: CGAffineTransform,
                           operation: ShapeBrushOperation,
-                          previewRevision messageRevision: Int) {
+                          previewRevision messageRevision: Int,
+                          colorLockRevision messageLockRevision: Int? = nil) {
         guard selectedPathIndex == pathIndex,
               !lassoSelection.contains(pathIndex),
+              colorLockAllowsPath(pathIndex),
               !points.isEmpty,
               brushInteractionEnabled,
-              messageRevision == previewRevision else {
+              messageRevision == previewRevision,
+              messageLockRevision == nil ||
+                messageLockRevision == colorLockRevision else {
             brushFeedbackVersion += 1
             return
         }
@@ -599,6 +733,7 @@ final class AppModel {
         while !pendingBrushStrokes.isEmpty {
             let request = pendingBrushStrokes.removeFirst()
             guard !deletedPaths.contains(request.pathIndex),
+                  colorLockAllowsPath(request.pathIndex),
                   let base = currentPathD(request.pathIndex) else {
                 continue
             }
@@ -644,7 +779,8 @@ final class AppModel {
         activeBrushStroke = nil
 
         guard sessionGeneration == generation,
-              currentPathD(request.pathIndex) == base else {
+              currentPathD(request.pathIndex) == base,
+              colorLockAllowsPath(request.pathIndex) else {
             cancelBrushWork()
             return
         }
@@ -658,9 +794,9 @@ final class AppModel {
 
         if edited != base {
             selectedAnchors = []
-            undoStack.append(.changeGeometry(
+            recordEdit(.setGeometry(
                 path: request.pathIndex,
-                previous: editedGeometry[request.pathIndex]
+                value: editedGeometry[request.pathIndex]
             ))
             editedGeometry[request.pathIndex] = edited
             replaceCurrentPathD(request.pathIndex, with: edited)
@@ -749,23 +885,81 @@ final class AppModel {
         return groups
     }
 
-    /// The final, post-grouping fill shown by the selected palette group.
-    /// The preview matches this against its rendered paths, so every visible
-    /// region with that color is highlighted together.
-    var highlightedColorHex: String? {
-        guard colorPreviewSpaceDown,
-              let highlightedColorGroupID else { return nil }
-        return manualColorGroups.first {
-            $0.id == highlightedColorGroupID
-        }?.colorHex
+    /// Persistent lock exposed as the current presentation group ID. The
+    /// stored source-member anchor lets this value change safely after regroup.
+    var lockedColorGroupID: String? {
+        group(containingAnchor: lockedColorAnchorHex)?.id
+    }
+
+    /// Group captured on the initial Space-down over a palette tile. This
+    /// remains stable across hover exit and clears on the matching key-up.
+    var temporaryLockedColorGroupID: String? {
+        group(containingAnchor: temporaryLockedColorAnchorHex)?.id
+    }
+
+    /// A Space-hover lock temporarily takes precedence over the persistent
+    /// lock, then releasing Space reveals the persistent lock again.
+    var effectiveLockedColorGroupID: String? {
+        temporaryLockedColorGroupID ?? lockedColorGroupID
+    }
+
+    /// Final post-grouping fill emphasized by the effective color lock.
+    var effectiveLockedColorHex: String? {
+        guard let groupID = effectiveLockedColorGroupID else { return nil }
+        return manualColorGroups.first { $0.id == groupID }?.colorHex
+    }
+
+    /// Automatic post-smash source colors admitted by the effective lock.
+    /// nil means there is no active lock.
+    var effectiveLockedMemberHexes: Set<String>? {
+        guard let anchor = temporaryLockedColorAnchorHex ?? lockedColorAnchorHex else {
+            return nil
+        }
+        // An active but temporarily unresolved anchor fails closed.
+        guard let group = group(containingAnchor: anchor) else { return [] }
+        return Set(group.members.map(\.hex))
+    }
+
+    /// Safe model-side gate for shape edits. Paths with unknown/stale palette
+    /// identity are rejected while a lock exists instead of slipping through.
+    func colorLockAllowsPath(_ pathIndex: Int) -> Bool {
+        guard let anchor = temporaryLockedColorAnchorHex ?? lockedColorAnchorHex else {
+            return true
+        }
+        guard let group = group(containingAnchor: anchor),
+              automaticPathColors.indices.contains(pathIndex),
+              let pathHex = automaticPathColors[pathIndex],
+              let normalizedPathHex = PaletteHex.normalize(pathHex) else {
+            return false
+        }
+        return group.members.contains { $0.hex == normalizedPathHex }
+    }
+
+    func toggleColorLock(groupID: String) {
+        guard let group = group(withID: groupID),
+              let anchor = group.members.first?.hex else { return }
+        if lockedColorGroupID == group.id {
+            lockedColorAnchorHex = nil
+        } else {
+            lockedColorAnchorHex = anchor
+        }
+        colorLockDidChange()
+    }
+
+    func clearColorLock() {
+        guard lockedColorAnchorHex != nil else { return }
+        lockedColorAnchorHex = nil
+        colorLockDidChange()
+    }
+
+    func isColorLocked(groupID: String) -> Bool {
+        guard let group = group(withID: groupID) else { return false }
+        return lockedColorGroupID == group.id
     }
 
     func setColorHighlight(groupID: String) {
-        guard let groupID = PaletteHex.normalize(groupID),
-              manualColorGroups.contains(where: { $0.id == groupID }) else {
-            return
-        }
-        highlightedColorGroupID = groupID
+        guard let group = group(withID: groupID) else { return }
+        highlightedColorGroupID = group.id
     }
 
     func clearColorHighlight() {
@@ -777,6 +971,77 @@ final class AppModel {
         guard let groupID = PaletteHex.normalize(groupID),
               highlightedColorGroupID == groupID else { return }
         highlightedColorGroupID = nil
+    }
+
+    /// Captures the hovered group only on the first Space-down. Key repeats do
+    /// not acquire a lock after a normal Space-to-pan gesture has begun.
+    private func captureTemporaryColorLock() -> Bool {
+        guard let highlightedColorGroupID,
+              let group = group(withID: highlightedColorGroupID),
+              let anchor = group.members.first?.hex else { return false }
+        temporaryLockedColorAnchorHex = anchor
+        colorLockDidChange()
+        return true
+    }
+
+    /// Reconciles all path-bound interaction state whenever the effective
+    /// source-color filter changes. A pending gesture for a newly locked-out
+    /// shape is discarded rather than committing after the lock switch.
+    private func colorLockDidChange() {
+        colorLockRevision &+= 1
+        sanitizeSelectionForColorLock()
+
+        let removedQueuedStroke = pendingBrushStrokes.contains {
+            !colorLockAllowsPath($0.pathIndex)
+        }
+        pendingBrushStrokes.removeAll {
+            !colorLockAllowsPath($0.pathIndex)
+        }
+        if let activeBrushStroke,
+           !colorLockAllowsPath(activeBrushStroke.pathIndex) {
+            cancelBrushWork()
+        } else if removedQueuedStroke {
+            brushFeedbackVersion &+= 1
+        }
+    }
+
+    private func group(withID rawID: String) -> ManualColorGroup? {
+        guard let groupID = PaletteHex.normalize(rawID) else { return nil }
+        return manualColorGroups.first { $0.id == groupID }
+    }
+
+    private func group(containingAnchor rawAnchor: String?) -> ManualColorGroup? {
+        guard let rawAnchor,
+              let anchor = PaletteHex.normalize(rawAnchor) else { return nil }
+        return manualColorGroups.first {
+            $0.members.contains(where: { $0.hex == anchor })
+        }
+    }
+
+    func beginColorEdit(groupID: String) {
+        guard let group = group(withID: groupID) else { return }
+        activeColorEditGroupID = group.id
+        activeColorEditRecordedHistory = false
+    }
+
+    func endColorEdit() {
+        activeColorEditGroupID = nil
+        activeColorEditRecordedHistory = false
+    }
+
+    private func recordManualColorMutation(
+        from previousRules: [ManualColorGroupRule],
+        coalescingGroupID: String? = nil
+    ) {
+        guard previousRules != manualColorGroupRules else { return }
+        if let coalescingGroupID,
+           activeColorEditGroupID == coalescingGroupID {
+            guard !activeColorEditRecordedHistory else { return }
+            recordEdit(.setManualColorGroups(previousRules))
+            activeColorEditRecordedHistory = true
+        } else {
+            recordEdit(.setManualColorGroups(previousRules))
+        }
     }
 
     /// Merges the entire source group into the destination group. Single
@@ -794,6 +1059,8 @@ final class AppModel {
               }),
               sourceGroup.id != targetGroup.id else { return }
 
+        endColorEdit()
+        let previousRules = manualColorGroupRules
         // Palette emphasis is hover-only. A completed drag ends that hover
         // preview rather than transferring sticky highlight ownership.
         highlightedColorGroupID = nil
@@ -807,6 +1074,7 @@ final class AppModel {
             members: targetMembers + sourceMembers.filter { !targetMembers.contains($0) },
             colorHex: targetGroup.colorHex
         ))
+        recordManualColorMutation(from: previousRules)
         finishManualColorChange()
     }
 
@@ -830,6 +1098,8 @@ final class AppModel {
             return false
         }
 
+        endColorEdit()
+        let previousRules = manualColorGroupRules
         highlightedColorGroupID = nil
         let sourceMembers = sourceGroup.members.map(\.hex)
         let targetMembers = targetGroup.members.map(\.hex)
@@ -854,6 +1124,7 @@ final class AppModel {
             members: targetMembers + [source],
             colorHex: targetGroup.colorHex
         ))
+        recordManualColorMutation(from: previousRules)
         finishManualColorChange()
         return true
     }
@@ -868,6 +1139,8 @@ final class AppModel {
                   $0.members.contains(where: { $0.hex == hex })
               }) else { return }
 
+        endColorEdit()
+        let previousRules = manualColorGroupRules
         highlightedColorGroupID = nil
         let memberHexes = group.members.map(\.hex)
         let wasCustom = group.colorHex != group.id
@@ -888,6 +1161,28 @@ final class AppModel {
                 ))
             }
         }
+        recordManualColorMutation(from: previousRules)
+        finishManualColorChange()
+    }
+
+    /// Dissolves an entire presentation group as one undoable transaction.
+    /// Every source member returns to its own automatic post-smash color.
+    func ungroup(groupID: String) {
+        guard editingInteractionEnabled,
+              canShowManualColorPanel,
+              let group = group(withID: groupID) else { return }
+        let memberHexes = group.members.map(\.hex)
+        let wasCustom = group.colorHex != group.id
+        guard memberHexes.count > 1 || wasCustom else { return }
+
+        endColorEdit()
+        let previousRules = manualColorGroupRules
+        let touched = Set(memberHexes)
+        highlightedColorGroupID = nil
+        manualColorGroupRules.removeAll {
+            !$0.members.allSatisfy { !touched.contains($0) }
+        }
+        recordManualColorMutation(from: previousRules)
         finishManualColorChange()
     }
 
@@ -899,6 +1194,7 @@ final class AppModel {
               let group = manualColorGroups.first(where: { $0.id == groupID }),
               output != group.colorHex else { return }
 
+        let previousRules = manualColorGroupRules
         highlightedColorGroupID = nil
         let members = group.members.map(\.hex)
         let touched = Set(members)
@@ -911,6 +1207,10 @@ final class AppModel {
                 colorHex: output
             ))
         }
+        recordManualColorMutation(
+            from: previousRules,
+            coalescingGroupID: groupID
+        )
         finishManualColorChange()
     }
 
@@ -918,6 +1218,7 @@ final class AppModel {
     /// edits keep the current slider budget and are applied to its resulting
     /// post-smash palette.
     private func finishManualColorChange() {
+        sanitizeColorLockState()
         outputColorCount = Set(manualColorGroups.map(\.colorHex)).count
         schedulePostProcess()
     }
@@ -962,26 +1263,79 @@ final class AppModel {
             }
         }
         manualColorGroupRules = sanitized
-        if !canShowManualColorPanel {
+        sanitizeColorLockState()
+    }
+
+    /// Removes stale hover/lock identities whenever the automatic palette or
+    /// manual grouping topology changes. Persistent and temporary locks keep
+    /// their source-member anchors, so a surviving member naturally resolves
+    /// to its new presentation group.
+    private func sanitizeColorLockState() {
+        guard canShowManualColorPanel else {
             highlightedColorGroupID = nil
-        } else if let highlightedColorGroupID,
-                  !manualColorGroups.contains(where: { $0.id == highlightedColorGroupID }) {
+            lockedColorAnchorHex = nil
+            temporaryLockedColorAnchorHex = nil
+            colorLockDidChange()
+            return
+        }
+
+        if let highlightedColorGroupID,
+           group(withID: highlightedColorGroupID) == nil {
             self.highlightedColorGroupID = nil
         }
+        if lockedColorAnchorHex != nil,
+           group(containingAnchor: lockedColorAnchorHex) == nil {
+            lockedColorAnchorHex = nil
+        }
+        if temporaryLockedColorAnchorHex != nil,
+           group(containingAnchor: temporaryLockedColorAnchorHex) == nil {
+            temporaryLockedColorAnchorHex = nil
+        }
+        // Even when the anchor survives, regrouping can change its admitted
+        // member set, so invalidate preview gestures and reconcile selection.
+        colorLockDidChange()
     }
 
     // MARK: - Selection
 
     /// Single click-selection from the preview; replaces any wand selection.
-    func selectPath(_ index: Int?) {
-        selectedPathIndex = index
+    func selectPath(_ index: Int?,
+                    colorLockRevision messageLockRevision: Int? = nil) {
+        if let messageLockRevision,
+           messageLockRevision != colorLockRevision {
+            return
+        }
+        let allowedIndex = index.flatMap { colorLockAllowsPath($0) ? $0 : nil }
+        selectedPathIndex = allowedIndex
         lassoSelection = []
         selectedAnchors = []
     }
 
-    func setLassoSelection(_ indices: Set<Int>) {
-        lassoSelection = indices
-        if !indices.isEmpty { selectedPathIndex = nil }
+    func setLassoSelection(_ indices: Set<Int>,
+                           colorLockRevision messageLockRevision: Int? = nil) {
+        if let messageLockRevision,
+           messageLockRevision != colorLockRevision {
+            return
+        }
+        let allowed = Set(indices.filter {
+            colorLockAllowsPath($0) && !deletedPaths.contains($0)
+        })
+        lassoSelection = allowed
+        if !allowed.isEmpty {
+            selectedPathIndex = nil
+            selectedAnchors = []
+        }
+    }
+
+    private func sanitizeSelectionForColorLock() {
+        if let selectedPathIndex,
+           !colorLockAllowsPath(selectedPathIndex) {
+            self.selectedPathIndex = nil
+            selectedAnchors = []
+        }
+        lassoSelection = Set(lassoSelection.filter {
+            colorLockAllowsPath($0) && !deletedPaths.contains($0)
+        })
     }
 
     /// Commits one cursor-tool drag as a root-SVG translation. The preview
@@ -990,11 +1344,15 @@ final class AppModel {
     func movePath(_ index: Int,
                   byX deltaX: Double,
                   y deltaY: Double,
-                  previewRevision messageRevision: Int) {
+                  previewRevision messageRevision: Int,
+                  colorLockRevision messageLockRevision: Int? = nil) {
         guard messageRevision == previewRevision,
+              messageLockRevision == nil ||
+                messageLockRevision == colorLockRevision,
               shapeMoveInteractionEnabled,
               index >= 0, index < pathCount,
               !deletedPaths.contains(index),
+              colorLockAllowsPath(index),
               deltaX.isFinite, deltaY.isFinite,
               abs(deltaX) > 1e-9 || abs(deltaY) > 1e-9 else { return }
 
@@ -1003,7 +1361,7 @@ final class AppModel {
         let next = ShapeOffset(x: current.x + deltaX, y: current.y + deltaY)
         guard next.x.isFinite, next.y.isFinite else { return }
 
-        undoStack.append(.moveShape(path: index, previous: previous))
+        recordEdit(.setShapeOffset(path: index, value: previous))
         if abs(next.x) <= 1e-9 && abs(next.y) <= 1e-9 {
             pathOffsets.removeValue(forKey: index)
         } else {
@@ -1057,6 +1415,9 @@ final class AppModel {
         automaticPathColors = []
         manualColorGroupRules = []
         highlightedColorGroupID = nil
+        lockedColorAnchorHex = nil
+        temporaryLockedColorAnchorHex = nil
+        paletteSpaceConsumesKey = false
         lastConversionTime = nil
         errorMessage = nil
         selectedPathIndex = nil
@@ -1066,7 +1427,8 @@ final class AppModel {
         editedGeometry = [:]
         pathOffsets = [:]
         deletedPaths = []
-        undoStack = []
+        resetEditHistory()
+        colorLockRevision &+= 1
         currentDesignURL = nil
         previewRevision += 1
         imageVersion += 1
@@ -1294,7 +1656,11 @@ final class AppModel {
         manualColorGroupRules = document.manualColorGroupRules ?? []
         colorPalette = []
         highlightedColorGroupID = nil
-        undoStack = []
+        lockedColorAnchorHex = nil
+        temporaryLockedColorAnchorHex = nil
+        paletteSpaceConsumesKey = false
+        resetEditHistory()
+        colorLockRevision &+= 1
         selectedPathIndex = nil
         lassoSelection = []
         selectedAnchors = []
@@ -1327,7 +1693,8 @@ final class AppModel {
     }
 
     func setOverride(_ settings: SimplificationSettings, for index: Int) {
-        guard editingInteractionEnabled else {
+        guard editingInteractionEnabled,
+              colorLockAllowsPath(index) else {
             errorMessage = "Wait for the current image update before editing a shape."
             return
         }
@@ -1339,7 +1706,8 @@ final class AppModel {
     }
 
     func clearOverride(for index: Int) {
-        guard editingInteractionEnabled else {
+        guard editingInteractionEnabled,
+              colorLockAllowsPath(index) else {
             errorMessage = "Wait for the current image update before editing a shape."
             return
         }
@@ -1523,7 +1891,11 @@ final class AppModel {
                 deletedPaths = []
                 colorPalette = []
                 highlightedColorGroupID = nil
-                undoStack = []
+                lockedColorAnchorHex = nil
+                temporaryLockedColorAnchorHex = nil
+                paletteSpaceConsumesKey = false
+                resetEditHistory()
+                colorLockRevision &+= 1
                 previewRevision += 1
                 await applyPostProcess(to: raw, generation: gen, conversionStart: start)
                 guard requestID == traceRequestID, gen == generation else { return }

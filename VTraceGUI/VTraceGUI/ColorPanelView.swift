@@ -7,15 +7,20 @@
 
 import SwiftUI
 import Foundation
+import AppKit
 
 struct ColorPanelView: View {
     @Bindable var model: AppModel
+    var beginColorEdit: (String) -> Void = { _ in }
+    var endColorEdit: () -> Void = {}
+
     @State private var groupFrames: [String: CGRect] = [:]
     @State private var ungroupFrame: CGRect = .zero
     @State private var activeDrag: PaletteDragPayload?
     @State private var dragLocation: CGPoint?
     @State private var dropTargetGroupID: String?
     @State private var isUngroupDropTarget = false
+    @State private var editingGroupID: String?
 
     private let columns = [
         GridItem(.adaptive(minimum: 72, maximum: 82), spacing: 7, alignment: .top),
@@ -34,9 +39,9 @@ struct ColorPanelView: View {
 
             if model.canShowManualColorPanel {
                 HStack(spacing: 5) {
-                    Image(systemName: "eye")
+                    Image(systemName: "lock")
                         .foregroundStyle(.secondary)
-                    Text("Hold Space while hovering to highlight. Click to edit. Drag a tile onto another to group; drag a small swatch to move just that color.")
+                    Text("Click a lock to keep one color isolated. Hold Space while hovering for a temporary lock. Click a color to edit; drag to group.")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -46,26 +51,42 @@ struct ColorPanelView: View {
                     ForEach(model.manualColorGroups) { group in
                         ColorGroupTile(
                             group: group,
-                            isHighlighted: model.colorPreviewSpaceDown
-                                && model.highlightedColorGroupID == group.id,
+                            isPersistentlyLocked: model.lockedColorGroupID == group.id,
+                            isEffectivelyLocked: model.effectiveLockedColorGroupID == group.id,
                             isDropTarget: dropTargetGroupID == group.id,
                             isPaletteDragging: activeDrag != nil,
-                            setHighlight: {
+                            setHover: {
                                 model.setColorHighlight(groupID: group.id)
                             },
-                            clearHighlight: {
+                            clearHover: {
                                 model.clearColorHighlight(groupID: group.id)
+                            },
+                            toggleLock: {
+                                model.toggleColorLock(groupID: group.id)
+                            },
+                            editAction: {
+                                openColorEditor(groupID: group.id)
                             },
                             dragChanged: updateDrag,
                             dragEnded: finishDrag,
                             ungroupAction: { hex in
                                 model.ungroup(hex: hex)
-                            },
-                            colorAction: { hex in
-                                model.setGroupColor(groupID: group.id, hex: hex)
                             }
                         )
                     }
+                }
+
+                if let group = editingGroup {
+                    GroupColorEditor(
+                        colorHex: group.colorHex,
+                        memberCount: group.members.count,
+                        apply: { hex in
+                            model.setGroupColor(groupID: group.id, hex: hex)
+                        },
+                        close: closeColorEditor
+                    )
+                    .id(group.id)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
 
                 HStack {
@@ -102,9 +123,28 @@ struct ColorPanelView: View {
         .overlay(alignment: .topLeading) {
             dragPreview
         }
-        .onDisappear(perform: resetDrag)
+        .onChange(of: editableGroupIDs) { _, groupIDs in
+            guard let editingGroupID,
+                  !groupIDs.contains(editingGroupID) else { return }
+            closeColorEditor()
+        }
+        .onDisappear {
+            resetDrag()
+            closeColorEditor()
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Color groups")
+    }
+
+    private var editingGroup: ManualColorGroup? {
+        guard model.canShowManualColorPanel,
+              let editingGroupID else { return nil }
+        return model.manualColorGroups.first { $0.id == editingGroupID }
+    }
+
+    private var editableGroupIDs: [String] {
+        guard model.canShowManualColorPanel else { return [] }
+        return model.manualColorGroups.map(\.id)
     }
 
     @ViewBuilder
@@ -130,6 +170,7 @@ struct ColorPanelView: View {
     private func updateDrag(_ payload: PaletteDragPayload, at location: CGPoint) {
         if activeDrag == nil {
             model.clearColorHighlight()
+            closeColorEditor()
         }
         activeDrag = payload
         dragLocation = location
@@ -175,6 +216,26 @@ struct ColorPanelView: View {
         isUngroupDropTarget = false
     }
 
+    private func openColorEditor(groupID: String) {
+        guard editingGroupID != groupID else { return }
+        if editingGroupID != nil {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            endColorEdit()
+        }
+        editingGroupID = groupID
+        beginColorEdit(groupID)
+    }
+
+    private func closeColorEditor() {
+        guard editingGroupID != nil else { return }
+        // Tear down any field editor before removing the inline editor view.
+        // This keeps text services attached to the stable app window instead
+        // of racing a disappearing SwiftUI subtree.
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        editingGroupID = nil
+        endColorEdit()
+    }
+
     private func accept(_ payload: PaletteDragPayload,
                         onto target: ManualColorGroup) -> Bool {
         switch payload.kind {
@@ -202,9 +263,7 @@ struct ColorPanelView: View {
             guard let group = model.manualColorGroups.first(where: { $0.id == payload.hex }) else {
                 return false
             }
-            for member in group.members {
-                model.ungroup(hex: member.hex)
-            }
+            model.ungroup(groupID: group.id)
         }
         return true
     }
@@ -212,17 +271,17 @@ struct ColorPanelView: View {
 
 private struct ColorGroupTile: View {
     let group: ManualColorGroup
-    let isHighlighted: Bool
+    let isPersistentlyLocked: Bool
+    let isEffectivelyLocked: Bool
     let isDropTarget: Bool
     let isPaletteDragging: Bool
-    let setHighlight: () -> Void
-    let clearHighlight: () -> Void
+    let setHover: () -> Void
+    let clearHover: () -> Void
+    let toggleLock: () -> Void
+    let editAction: () -> Void
     let dragChanged: (PaletteDragPayload, CGPoint) -> Void
     let dragEnded: (PaletteDragPayload, CGPoint) -> Void
     let ungroupAction: (String) -> Void
-    let colorAction: (String) -> Void
-
-    @State private var isEditingColor = false
 
     private let memberColumns = [
         GridItem(.adaptive(minimum: 22, maximum: 24), spacing: 4),
@@ -261,13 +320,13 @@ private struct ColorGroupTile: View {
             .onHover { hovering in
                 guard !isPaletteDragging else { return }
                 if hovering {
-                    setHighlight()
+                    setHover()
                 } else {
-                    clearHighlight()
+                    clearHover()
                 }
             }
             .animation(.easeOut(duration: 0.12), value: isDropTarget)
-            .animation(.easeOut(duration: 0.12), value: isHighlighted)
+            .animation(.easeOut(duration: 0.12), value: isEffectivelyLocked)
     }
 
     private var tileContent: some View {
@@ -278,27 +337,36 @@ private struct ColorGroupTile: View {
     }
 
     private var groupHeader: some View {
-        ZStack(alignment: .topLeading) {
+        HStack(alignment: .top, spacing: 3) {
             groupDragHandle
+            lockButton
+        }
+    }
 
-            Button {
-                openEditor()
-            } label: {
-                Image(systemName: "pencil.circle.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size: 14))
-            }
-            .buttonStyle(.plain)
-            .help("Edit group color \(group.colorHex.uppercased())")
-            .accessibilityLabel("Edit group color \(group.colorHex.uppercased())")
+    private var lockButton: some View {
+        Button(action: toggleLock) {
+            Image(systemName: isPersistentlyLocked ? "lock.fill" : "lock.open")
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isEffectivelyLocked ? Color.accentColor : Color.secondary)
+                .frame(width: 18, height: 22)
+                .contentShape(Rectangle())
         }
-        .popover(isPresented: $isEditingColor, arrowEdge: .leading) {
-            GroupColorEditor(
-                colorHex: group.colorHex,
-                memberCount: group.members.count,
-                apply: colorAction
-            )
-        }
+        .buttonStyle(.plain)
+        .help(isPersistentlyLocked
+              ? "Unlock \(group.colorHex.uppercased())"
+              : "Lock \(group.colorHex.uppercased()) in the preview")
+        .accessibilityLabel(
+            isPersistentlyLocked
+                ? "Unlock group color \(group.colorHex.uppercased())"
+                : "Lock group color \(group.colorHex.uppercased())"
+        )
+        .accessibilityValue(lockAccessibilityValue)
+        .accessibilityHint(
+            isPersistentlyLocked
+                ? "Removes the persistent color lock"
+                : "Keeps this color isolated until it is unlocked; only one color can stay locked"
+        )
     }
 
     private var groupDragHandle: some View {
@@ -314,7 +382,6 @@ private struct ColorGroupTile: View {
                         .padding(.horizontal, 4)
                         .frame(minWidth: 15, minHeight: 15)
                         .background(Color.accentColor, in: Capsule())
-                        .offset(x: 5, y: -4)
                 }
             }
 
@@ -330,18 +397,18 @@ private struct ColorGroupTile: View {
         }
         .frame(maxWidth: .infinity, minHeight: 54)
         .contentShape(Rectangle())
-        .onTapGesture(perform: openEditor)
-        .paletteDragSource(
+        .paletteClickOrDrag(
             PaletteDragPayload(kind: .group, hex: group.id),
+            clicked: openEditor,
             changed: dragChanged,
             ended: dragEnded
         )
-        .help("Hold Space while hovering to highlight \(group.colorHex.uppercased()). Click to edit; drag onto another color to group.")
+        .help("Click to edit \(group.colorHex.uppercased()); drag onto another color to group.")
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("Group color \(group.colorHex.uppercased())")
         .accessibilityValue(groupAccessibilityValue)
-        .accessibilityHint("Click to edit its hex or HSV color, or drag onto another color to group them")
+        .accessibilityHint("Click to open its inline hex and HSV editor, or drag onto another color to group them")
         .accessibilityAction(AccessibilityActionKind.default, openEditor)
     }
 
@@ -373,28 +440,34 @@ private struct ColorGroupTile: View {
 
     private var tileFill: Color {
         if isDropTarget { return Color.accentColor.opacity(0.18) }
-        if isHighlighted { return Color.yellow.opacity(0.15) }
+        if isEffectivelyLocked { return Color.yellow.opacity(0.15) }
         return Color.primary.opacity(0.045)
     }
 
     private var tileStroke: Color {
         if isDropTarget { return .accentColor }
-        if isHighlighted { return .yellow }
+        if isEffectivelyLocked { return .yellow }
         return Color.primary.opacity(0.12)
     }
 
     private var tileStrokeWidth: Double {
-        isDropTarget || isHighlighted ? 2 : 1
+        isDropTarget || isEffectivelyLocked ? 2 : 1
     }
 
     private var groupAccessibilityValue: String {
         let noun = group.members.count == 1 ? "source color" : "source colors"
-        return "\(group.members.count) \(noun)"
+        return "\(group.members.count) \(noun), \(lockAccessibilityValue.lowercased())"
+    }
+
+    private var lockAccessibilityValue: String {
+        if isPersistentlyLocked { return "Locked" }
+        if isEffectivelyLocked { return "Temporarily locked" }
+        return "Unlocked"
     }
 
     private func openEditor() {
-        clearHighlight()
-        isEditingColor = true
+        clearHover()
+        editAction()
     }
 }
 
@@ -419,10 +492,10 @@ private struct PaletteMemberSwatch: View {
         HexColorSwatch(hex: color.hex)
             .frame(width: 24, height: 24)
             .contentShape(Rectangle())
-            .onTapGesture(perform: edit)
-            .help("\(color.hex.uppercased()) — \(color.count) shape\(color.count == 1 ? "" : "s"). Hold Space while hovering to highlight its group; click to edit; drag to regroup.")
-            .paletteDragSource(
+            .help("\(color.hex.uppercased()) — \(color.count) shape\(color.count == 1 ? "" : "s"). Click to edit; drag to regroup.")
+            .paletteClickOrDrag(
                 PaletteDragPayload(kind: .member, hex: color.hex),
+                clicked: edit,
                 changed: dragChanged,
                 ended: dragEnded
             )
@@ -514,20 +587,22 @@ private struct GroupColorEditor: View {
     let colorHex: String
     let memberCount: Int
     let apply: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
+    let close: () -> Void
 
     @State private var hexText: String
     @State private var hue: Double
     @State private var saturation: Double
     @State private var value: Double
     @State private var showsInvalidHex = false
-    @FocusState private var isHexFocused: Bool
 
-    init(colorHex: String, memberCount: Int, apply: @escaping (String) -> Void) {
+    init(colorHex: String,
+         memberCount: Int,
+         apply: @escaping (String) -> Void,
+         close: @escaping () -> Void) {
         self.colorHex = colorHex
         self.memberCount = memberCount
         self.apply = apply
+        self.close = close
 
         let normalized = ColorMath.normalizedHex(colorHex) ?? "#808080"
         let hsv = ColorMath.hsv(from: normalized)
@@ -553,9 +628,7 @@ private struct GroupColorEditor: View {
 
                 Spacer()
 
-                Button {
-                    dismiss()
-                } label: {
+                Button(action: close) {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
@@ -568,7 +641,7 @@ private struct GroupColorEditor: View {
                     TextField("#RRGGBB", text: $hexText)
                         .textFieldStyle(.roundedBorder)
                         .font(.body.monospaced())
-                        .focused($isHexFocused)
+                        .disableAutocorrection(true)
                         .onSubmit(applyHex)
                         .accessibilityLabel("Hex color")
 
@@ -645,9 +718,22 @@ private struct GroupColorEditor: View {
             )
         }
         .padding(14)
-        .frame(width: 270)
-        .onAppear {
-            isHexFocused = true
+        .frame(maxWidth: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.primary.opacity(0.045))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.primary.opacity(0.14))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Inline group color editor for \(colorHex.uppercased())")
+        .onChange(of: colorHex) { _, updatedHex in
+            guard let normalized = ColorMath.normalizedHex(updatedHex),
+                  normalized != liveHex else { return }
+            sync(to: normalized)
+            showsInvalidHex = false
         }
     }
 
@@ -683,6 +769,7 @@ private struct GroupColorEditor: View {
         showsInvalidHex = false
         sync(to: normalized)
         apply(normalized)
+        NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
     private func applySaturationValue(saturation: Double, value: Double) {
@@ -856,25 +943,71 @@ private struct PaletteUngroupFrameKey: PreferenceKey {
     }
 }
 
-private extension View {
-    func paletteDragSource(
-        _ payload: PaletteDragPayload,
-        changed: @escaping (PaletteDragPayload, CGPoint) -> Void,
-        ended: @escaping (PaletteDragPayload, CGPoint) -> Void
-    ) -> some View {
-        // Run beside the existing tap-to-edit gesture. A normal click never
-        // reaches the five-point threshold; a drag cancels the platform tap.
-        simultaneousGesture(
+private struct PaletteClickOrDragModifier: ViewModifier {
+    private static let dragThreshold: CGFloat = 8
+
+    let payload: PaletteDragPayload
+    let clicked: () -> Void
+    let changed: (PaletteDragPayload, CGPoint) -> Void
+    let ended: (PaletteDragPayload, CGPoint) -> Void
+
+    @State private var didCrossDragThreshold = false
+
+    func body(content: Content) -> some View {
+        content.simultaneousGesture(
             DragGesture(
-                minimumDistance: 5,
+                minimumDistance: 0,
                 coordinateSpace: .named(PaletteDragCoordinateSpace.name)
             )
             .onChanged { value in
+                guard didCrossDragThreshold || isDrag(value.translation) else {
+                    return
+                }
+
+                didCrossDragThreshold = true
                 changed(payload, value.location)
             }
             .onEnded { value in
-                ended(payload, value.location)
+                let wasAlreadyDragging = didCrossDragThreshold
+                let wasDrag = wasAlreadyDragging || isDrag(value.translation)
+                didCrossDragThreshold = false
+
+                if wasDrag {
+                    // A very quick movement can first cross the threshold on
+                    // mouse-up, so establish the drag before finishing it.
+                    if !wasAlreadyDragging {
+                        changed(payload, value.location)
+                    }
+                    ended(payload, value.location)
+                } else {
+                    clicked()
+                }
             }
+        )
+    }
+
+    private func isDrag(_ translation: CGSize) -> Bool {
+        let distanceSquared =
+            (translation.width * translation.width)
+            + (translation.height * translation.height)
+        return distanceSquared >= Self.dragThreshold * Self.dragThreshold
+    }
+}
+
+private extension View {
+    func paletteClickOrDrag(
+        _ payload: PaletteDragPayload,
+        clicked: @escaping () -> Void,
+        changed: @escaping (PaletteDragPayload, CGPoint) -> Void,
+        ended: @escaping (PaletteDragPayload, CGPoint) -> Void
+    ) -> some View {
+        modifier(
+            PaletteClickOrDragModifier(
+                payload: payload,
+                clicked: clicked,
+                changed: changed,
+                ended: ended
+            )
         )
     }
 }

@@ -75,6 +75,7 @@ struct ToolPaletteView: View {
         .padding(.vertical, 8)
         .frame(width: 68)
         .background(.bar)
+        .zIndex(100)
         .task(id: hoveredTool) {
             visibleTooltip = nil
             guard let hoveredTool else { return }
@@ -133,25 +134,26 @@ struct ToolPaletteView: View {
                 visibleTooltip = nil
             }
         }
-        .popover(
-            isPresented: Binding(
-                get: { visibleTooltip == tooltip },
-                set: { isPresented in
-                    if !isPresented, visibleTooltip == tooltip {
-                        visibleTooltip = nil
+        .overlay(alignment: .leading) {
+            if visibleTooltip == tooltip {
+                Text("\(label) (\(shortcut))")
+                    .font(.callout.weight(.medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .fixedSize()
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(Color.primary.opacity(0.16))
                     }
-                }
-            ),
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .leading
-        ) {
-            Text("\(label) (\(shortcut))")
-                .font(.callout.weight(.medium))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .fixedSize()
-                .accessibilityHidden(true)
+                    .shadow(color: .black.opacity(0.28), radius: 7, y: 3)
+                    .offset(x: 36)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                    .transition(.opacity)
+            }
         }
+        .zIndex(visibleTooltip == tooltip ? 101 : 0)
         .accessibilityLabel(label)
         .accessibilityHint("Keyboard shortcut \(shortcut)")
         .accessibilityValue(isSelected ? "Selected" : "")

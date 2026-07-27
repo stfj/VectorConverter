@@ -50,7 +50,10 @@ struct VTraceGUIApp: App {
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { model.undoLastEdit() }
                     .keyboardShortcut("z")
-                    .disabled(!model.canUndoDeletion)
+                    .disabled(!model.canUndo)
+                Button("Redo") { model.redoLastEdit() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!model.canRedo)
             }
             CommandGroup(replacing: .pasteboard) {
                 Button("Copy SVG") { model.copySVGToClipboard() }
