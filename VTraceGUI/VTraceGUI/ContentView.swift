@@ -142,7 +142,9 @@ struct ContentView: View {
                 Text(String(format: "%.2fs", seconds))
             }
             if let index = model.selectedPathIndex {
-                Text("shape \(index + 1) selected")
+                Text(model.previewTool == .cursor
+                     ? "shape \(index + 1) selected — drag to move"
+                     : "shape \(index + 1) selected")
                     .foregroundStyle(Color.accentColor)
             }
             if !model.lassoSelection.isEmpty {

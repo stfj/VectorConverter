@@ -71,6 +71,7 @@ struct SVGPreviewView: NSViewRepresentable {
         configuration.userContentController.add(context.coordinator, name: "lassoSelect")
         configuration.userContentController.add(context.coordinator, name: "anchorSelect")
         configuration.userContentController.add(context.coordinator, name: "brushStroke")
+        configuration.userContentController.add(context.coordinator, name: "shapeMove")
         let webView = ImageDropWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         let model = model
@@ -91,6 +92,7 @@ struct SVGPreviewView: NSViewRepresentable {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "lassoSelect")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "anchorSelect")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "brushStroke")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "shapeMove")
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
@@ -155,6 +157,13 @@ struct SVGPreviewView: NSViewRepresentable {
                 "setBrushEnabled(\(model.brushInteractionEnabled))"
             )
         }
+        if coordinator.sentMoveEnabled != model.shapeMoveInteractionEnabled {
+            coordinator.sentMoveEnabled = model.shapeMoveInteractionEnabled
+            coordinator.run(
+                webView,
+                "setMoveEnabled(\(model.shapeMoveInteractionEnabled))"
+            )
+        }
         if coordinator.sentBrushFeedbackVersion != model.brushFeedbackVersion {
             coordinator.sentBrushFeedbackVersion = model.brushFeedbackVersion
             coordinator.run(webView, "clearBrushFeedback()")
@@ -197,6 +206,7 @@ struct SVGPreviewView: NSViewRepresentable {
         var sentTool = PreviewTool.cursor
         var sentBrushSize = 0.0
         var sentBrushEnabled = true
+        var sentMoveEnabled = true
         var sentBrushFeedbackVersion = 0
         var sentHighlightedColorHex: String?
         var sentPreviewRevision = 0
@@ -281,6 +291,18 @@ struct SVGPreviewView: NSViewRepresentable {
                                            operation: operation,
                                            previewRevision: previewRevision)
                 }
+            } else if message.name == "shapeMove",
+                      let payload = message.body as? [String: Any],
+                      let pathIndex = number(payload["pathIndex"]).map(Int.init),
+                      let deltaX = number(payload["deltaX"]),
+                      let deltaY = number(payload["deltaY"]),
+                      let previewRevision = number(payload["previewRevision"]).map(Int.init) {
+                Task { @MainActor in
+                    model.movePath(pathIndex,
+                                   byX: deltaX,
+                                   y: deltaY,
+                                   previewRevision: previewRevision)
+                }
             }
         }
 
@@ -361,6 +383,9 @@ struct SVGPreviewView: NSViewRepresentable {
         body.tool-zoom.alt #stage { cursor: zoom-out; }
         body.tool-hand #stage { cursor: grab; }
         body.tool-hand.panning #stage { cursor: grabbing; }
+        body.tool-cursor #overlay svg > path { cursor: move; }
+        body.tool-cursor.shape-moving #stage,
+        body.tool-cursor.shape-moving #overlay svg > path { cursor: grabbing; }
         body.tool-wand #stage { cursor: crosshair; }
         body.tool-brush-add #stage,
         body.tool-brush-subtract #stage { cursor: crosshair; }
@@ -498,6 +523,7 @@ struct SVGPreviewView: NSViewRepresentable {
 
         function setImage(src, revision) {
             clearBrushFeedback();
+            if (shapeDrag) cancelShapeDrag(false);
             setPreviewRevision(revision);
             document.body.classList.remove('has-svg');
             overlay.innerHTML = '';
@@ -512,6 +538,7 @@ struct SVGPreviewView: NSViewRepresentable {
 
         function setSVG(text, revision) {
             setPreviewRevision(revision);
+            if (shapeDrag) cancelShapeDrag(false);
             // A prior stroke can finish processing while the user is already
             // drawing the next one. Keep that live gesture across the DOM swap;
             // its root-SVG coordinates remain valid against the new geometry.
@@ -582,6 +609,7 @@ struct SVGPreviewView: NSViewRepresentable {
         let spaceDown = false;      // temporary hand tool while held
         let altDown = false;
         let brushEnabled = true;
+        var moveEnabled = true;
         let brushSubmissionPending = false;
         let brushSize = 32;         // root SVG/source pixels
         let scale = 1, tx = 0, ty = 0;
@@ -615,6 +643,7 @@ struct SVGPreviewView: NSViewRepresentable {
 
         function setTool(t) {
             if (brushActive) cancelBrushStroke();
+            if (shapeDrag) cancelShapeDrag(true);
             if (t !== 'anchor') selectedAnchorSet.clear();
             tool = t;
             updateToolClasses();
@@ -635,7 +664,14 @@ struct SVGPreviewView: NSViewRepresentable {
             updateBrushCursor(lastPointerX, lastPointerY);
         }
 
+        function setMoveEnabled(enabled) {
+            moveEnabled = !!enabled;
+            if (!moveEnabled && shapeDrag) cancelShapeDrag(true);
+            updateToolClasses();
+        }
+
         function setPreviewRevision(revision) {
+            if (shapeDrag) cancelShapeDrag(true);
             if (!Number.isFinite(revision) || revision === previewRevision) return;
             previewRevision = revision;
             selectedIndices = [];
@@ -647,6 +683,7 @@ struct SVGPreviewView: NSViewRepresentable {
 
         function setSpaceDown(d) {
             if (d && brushActive) cancelBrushStroke();
+            if (d && shapeDrag) cancelShapeDrag(true);
             spaceDown = d;
             updateToolClasses();
             rebuildPoints();
@@ -666,6 +703,7 @@ struct SVGPreviewView: NSViewRepresentable {
             b.classList.toggle('tool-zoom', !hand && tool === 'zoom');
             b.classList.toggle('tool-wand', !hand && tool === 'wand');
             b.classList.toggle('tool-anchor', !hand && tool === 'anchor');
+            b.classList.toggle('tool-cursor', !hand && tool === 'cursor');
             const brushOperation = effectiveBrushOperation();
             b.classList.toggle('tool-brush-add',
                 !hand && isBrushTool() && brushOperation === 'add');
@@ -906,6 +944,127 @@ struct SVGPreviewView: NSViewRepresentable {
             updateBrushCursor(lastPointerX, lastPointerY);
         }
 
+        var shapeDrag = null;
+        var suppressShapeClick = false;
+
+        function selectShapeLocally(index) {
+            selectedIndices = index >= 0 ? [index] : [];
+            wandMode = false;
+            selectedAnchorSet.clear();
+            anchorNearest = null;
+            clearLasso();
+            rebuildPoints();
+        }
+
+        function beginShapeDrag(e) {
+            if (!moveEnabled || tool !== 'cursor' || e.button !== 0) return false;
+            const paths = shapePaths();
+            const index = paths.indexOf(e.target);
+            const path = index >= 0 ? paths[index] : null;
+            const start = path ? clientToRoot(e.clientX, e.clientY) : null;
+            if (!path || path.style.display === 'none' || !start) return false;
+
+            selectShapeLocally(index);
+            // Selection happens on press so dragging a previously-unselected
+            // path works in one gesture. The later click message is harmless
+            // for a click-without-drag; moved gestures suppress that click.
+            try {
+                window.webkit.messageHandlers.pathClick.postMessage({
+                    index: index,
+                    previewRevision: previewRevision
+                });
+            } catch (err) {}
+            shapeDrag = {
+                path: path,
+                pathIndex: index,
+                startRootX: start.x,
+                startRootY: start.y,
+                startClientX: e.clientX,
+                startClientY: e.clientY,
+                deltaX: 0,
+                deltaY: 0,
+                moved: false,
+                originalTransform: path.getAttribute('transform')
+            };
+            e.preventDefault();
+            return true;
+        }
+
+        function updateShapeDrag(e) {
+            if (!shapeDrag) return false;
+            const point = clientToRoot(e.clientX, e.clientY);
+            if (!point) return true;
+            const clientDX = e.clientX - shapeDrag.startClientX;
+            const clientDY = e.clientY - shapeDrag.startClientY;
+            if (!shapeDrag.moved && clientDX * clientDX + clientDY * clientDY < 9) {
+                return true;
+            }
+
+            shapeDrag.moved = true;
+            shapeDrag.deltaX = point.x - shapeDrag.startRootX;
+            shapeDrag.deltaY = point.y - shapeDrag.startRootY;
+            const translation = 'translate(' + shapeDrag.deltaX + ' ' +
+                shapeDrag.deltaY + ')';
+            shapeDrag.path.setAttribute(
+                'transform',
+                shapeDrag.originalTransform
+                    ? translation + ' ' + shapeDrag.originalTransform
+                    : translation
+            );
+            document.body.classList.add('shape-moving');
+            rebuildPoints();
+            e.preventDefault();
+            return true;
+        }
+
+        function finishShapeDrag(e) {
+            if (!shapeDrag) return false;
+            updateShapeDrag(e);
+            const completed = shapeDrag;
+            shapeDrag = null;
+            document.body.classList.remove('shape-moving');
+
+            if (completed.moved) {
+                suppressShapeClick = true;
+                setTimeout(() => { suppressShapeClick = false; }, 0);
+                try {
+                    window.webkit.messageHandlers.shapeMove.postMessage({
+                        pathIndex: completed.pathIndex,
+                        deltaX: completed.deltaX,
+                        deltaY: completed.deltaY,
+                        previewRevision: previewRevision
+                    });
+                } catch (err) {
+                    if (completed.path.isConnected) {
+                        if (completed.originalTransform === null) {
+                            completed.path.removeAttribute('transform');
+                        } else {
+                            completed.path.setAttribute(
+                                'transform',
+                                completed.originalTransform
+                            );
+                        }
+                    }
+                }
+            }
+            rebuildPoints();
+            return true;
+        }
+
+        function cancelShapeDrag(restoreTransform) {
+            if (!shapeDrag) return;
+            if (restoreTransform && shapeDrag.path.isConnected) {
+                if (shapeDrag.originalTransform === null) {
+                    shapeDrag.path.removeAttribute('transform');
+                } else {
+                    shapeDrag.path.setAttribute('transform', shapeDrag.originalTransform);
+                }
+            }
+            shapeDrag = null;
+            document.body.classList.remove('shape-moving');
+            rebuildPoints();
+        }
+
         let panning = false, panStartX = 0, panStartY = 0, panTx = 0, panTy = 0;
         document.addEventListener('mousedown', e => {
             lastPointerX = e.clientX;
@@ -926,6 +1085,8 @@ struct SVGPreviewView: NSViewRepresentable {
                     marquee = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
                     marqueeMoved = false;
                     e.preventDefault();
+                } else if (tool === 'cursor') {
+                    beginShapeDrag(e);
                 }
                 return;
             }
@@ -940,6 +1101,14 @@ struct SVGPreviewView: NSViewRepresentable {
             updateBrushCursor(e.clientX, e.clientY);
             if (brushActive) {
                 appendBrushPoint(e.clientX, e.clientY, false);
+                return;
+            }
+            if (shapeDrag) {
+                if ((e.buttons & 1) === 0) {
+                    finishShapeDrag(e);
+                } else {
+                    updateShapeDrag(e);
+                }
                 return;
             }
             if (marquee) {
@@ -972,6 +1141,10 @@ struct SVGPreviewView: NSViewRepresentable {
                 finishBrushStroke(e);
                 return;
             }
+            if (shapeDrag) {
+                finishShapeDrag(e);
+                return;
+            }
             if (marquee) {
                 if (marqueeMoved) {
                     applyMarquee(marquee.x0, marquee.y0, marquee.x1, marquee.y1, e.shiftKey);
@@ -994,10 +1167,18 @@ struct SVGPreviewView: NSViewRepresentable {
 
         document.addEventListener('mouseleave', e => {
             if (brushActive && e.buttons === 0) cancelBrushStroke();
+            if (shapeDrag) {
+                // Mouseup outside WKWebView is not guaranteed to return here.
+                // Cancel while the button is still down so a stale gesture
+                // cannot jump the path when the pointer later re-enters.
+                if ((e.buttons & 1) === 0) finishShapeDrag(e);
+                else cancelShapeDrag(true);
+            }
             updateBrushCursor(null, null);
         });
         window.addEventListener('blur', () => {
             cancelBrushStroke();
+            cancelShapeDrag(true);
             if (panning) {
                 panning = false;
                 document.body.classList.remove('panning');
@@ -1260,6 +1441,10 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         document.addEventListener('click', e => {
+            if (suppressShapeClick) {
+                suppressShapeClick = false;
+                return;
+            }
             if (isHandActive()) return;
             if (isBrushTool()) return;   // don't let the trailing click deselect
             if (tool === 'zoom') {
@@ -1277,10 +1462,7 @@ struct SVGPreviewView: NSViewRepresentable {
             if (tool === 'wand') return;   // clicks are lasso strokes here
             const paths = shapePaths();
             const idx = paths.indexOf(e.target);
-            selectedIndices = idx >= 0 ? [idx] : [];
-            wandMode = false;
-            clearLasso();
-            rebuildPoints();
+            selectShapeLocally(idx);
             try {
                 window.webkit.messageHandlers.pathClick.postMessage({
                     index: idx,
@@ -1290,16 +1472,13 @@ struct SVGPreviewView: NSViewRepresentable {
         });
 
         // ---- Control point overlay (selected shape only) ----
-        function parseTranslate(tr) {
-            if (!tr) return [0, 0];
-            const i = tr.indexOf('translate(');
-            if (i < 0) return [0, 0];
-            const inner = tr.slice(i + 10, tr.indexOf(')', i));
-            const parts = inner.split(/[ ,]+/).map(parseFloat);
-            return [parts[0] || 0, parts[1] || 0];
+        function pointInRoot(matrix, x, y) {
+            if (!matrix) return [x, y];
+            const p = new DOMPoint(x, y).matrixTransform(matrix);
+            return [p.x, p.y];
         }
 
-        function parseD(d, tx, ty, out) {
+        function parseD(d, localToRoot, out) {
             const tokens = d.match(/[A-Za-z]|[-+0-9.eE]+/g);
             if (!tokens) return;
             let i = 0, cmd = '', cx = 0, cy = 0;
@@ -1322,17 +1501,21 @@ struct SVGPreviewView: NSViewRepresentable {
                     if (isNaN(x) || isNaN(y)) return;
                     if (cmd === 'm' || cmd === 'l') { x += cx; y += cy; }
                     cx = x; cy = y;
-                    out.anchors.push([x + tx, y + ty]);
+                    out.anchors.push(pointInRoot(localToRoot, x, y));
                 } else if (cmd === 'C' || cmd === 'c') {
                     let x1 = num(), y1 = num(), x2 = num(), y2 = num(), x = num(), y = num();
                     if (isNaN(x) || isNaN(y)) return;
                     if (cmd === 'c') { x1 += cx; y1 += cy; x2 += cx; y2 += cy; x += cx; y += cy; }
-                    out.handles.push([cx + tx, cy + ty, x1 + tx, y1 + ty]);
-                    out.handles.push([x + tx, y + ty, x2 + tx, y2 + ty]);
-                    out.controls.push([x1 + tx, y1 + ty]);
-                    out.controls.push([x2 + tx, y2 + ty]);
+                    const from = pointInRoot(localToRoot, cx, cy);
+                    const to = pointInRoot(localToRoot, x, y);
+                    const control1 = pointInRoot(localToRoot, x1, y1);
+                    const control2 = pointInRoot(localToRoot, x2, y2);
+                    out.handles.push([from[0], from[1], control1[0], control1[1]]);
+                    out.handles.push([to[0], to[1], control2[0], control2[1]]);
+                    out.controls.push(control1);
+                    out.controls.push(control2);
                     cx = x; cy = y;
-                    out.anchors.push([x + tx, y + ty]);
+                    out.anchors.push(to);
                 } else {
                     return; // unsupported command
                 }
@@ -1380,8 +1563,7 @@ struct SVGPreviewView: NSViewRepresentable {
             selectedIndices.forEach(idx => {
                 if (idx < 0 || idx >= paths.length) return;
                 const p = paths[idx];
-                const tr = parseTranslate(p.getAttribute('transform'));
-                parseD(p.getAttribute('d') || '', tr[0], tr[1], out);
+                parseD(p.getAttribute('d') || '', pathLocalToRoot(p), out);
             });
             const g = document.createElementNS(SVGNS, 'g');
             g.setAttribute('id', 'ctrlpts');

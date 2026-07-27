@@ -67,6 +67,7 @@ nonisolated enum SVGSimplifier {
                         overrides: [Int: SimplificationSettings] = [:],
                         deleted: Set<Int> = [],
                         editedGeometry: [Int: String] = [:],
+                        shapeOffsets: [Int: ShapeOffset] = [:],
                         manualColors: [String: String] = [:]) -> Result? {
         let inputColors = palette(in: svg)
         let (automaticallyReduced, _, _) = mergeFills(
@@ -138,13 +139,94 @@ nonisolated enum SVGSimplifier {
             }
         }
         output += ns.substring(from: cursor)
-        return Result(svg: output, pathCount: pathIndex,
+        // Position is deliberately the last geometry pass. It remains a
+        // separate SVG transform instead of becoming part of `d`, so changing
+        // simplification or making another point/brush edit cannot move the
+        // user's shape or repeatedly bake the translation into its geometry.
+        let positionedOutput = applyingShapeOffsets(shapeOffsets, to: output)
+        return Result(svg: positionedOutput, pathCount: pathIndex,
                       inputPointCount: inputPoints, outputPointCount: outputPoints,
                       outputNodeCount: outputNodes,
                       inputColorCount: inputColors.count, inputColors: inputColors,
                       automaticColors: automaticColors,
                       automaticColorCount: automaticColors.count,
                       outputColorCount: outputColors)
+    }
+
+    /// Prepends a root-coordinate translation to each affected path's existing
+    /// transform. SVG applies the rightmost transform first, so placing the
+    /// translation first preserves the path's original local transform while
+    /// moving its rendered result by the requested root-SVG delta.
+    static func applyingShapeOffsets(_ offsets: [Int: ShapeOffset],
+                                     to svg: String) -> String {
+        guard offsets.contains(where: {
+            $0.value.x.isFinite && $0.value.y.isFinite &&
+                (abs($0.value.x) > 1e-9 || abs($0.value.y) > 1e-9)
+        }) else { return svg }
+
+        let ns = svg as NSString
+        let pathRegex = try! NSRegularExpression(
+            pattern: "<path\\b[^>]*>",
+            options: [.caseInsensitive]
+        )
+        let transformRegex = try! NSRegularExpression(
+            pattern: "\\btransform\\s*=\\s*([\"'])(.*?)\\1",
+            options: [.caseInsensitive]
+        )
+        let matches = pathRegex.matches(
+            in: svg,
+            range: NSRange(location: 0, length: ns.length)
+        )
+        var replacements: [(NSRange, String)] = []
+
+        for (index, match) in matches.enumerated() {
+            guard let offset = offsets[index],
+                  offset.x.isFinite, offset.y.isFinite,
+                  abs(offset.x) > 1e-9 || abs(offset.y) > 1e-9 else { continue }
+            let tag = ns.substring(with: match.range)
+            let tagNS = tag as NSString
+            let translation = "translate(\(offsetNumber(offset.x)) \(offsetNumber(offset.y)))"
+            let tagRange = NSRange(location: 0, length: tagNS.length)
+            let positionedTag: String
+
+            if let transform = transformRegex.firstMatch(in: tag, range: tagRange) {
+                let existing = tagNS.substring(with: transform.range(at: 2))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = existing.isEmpty ? translation : "\(translation) \(existing)"
+                let mutable = NSMutableString(string: tag)
+                mutable.replaceCharacters(
+                    in: transform.range,
+                    with: "transform=\"\(value)\""
+                )
+                positionedTag = mutable as String
+            } else if tag.hasSuffix("/>") {
+                positionedTag = String(tag.dropLast(2)) +
+                    " transform=\"\(translation)\"/>"
+            } else {
+                positionedTag = String(tag.dropLast()) +
+                    " transform=\"\(translation)\">"
+            }
+            replacements.append((match.range, positionedTag))
+        }
+
+        guard !replacements.isEmpty else { return svg }
+        let output = NSMutableString(string: svg)
+        for (range, replacement) in replacements.reversed() {
+            output.replaceCharacters(in: range, with: replacement)
+        }
+        return output as String
+    }
+
+    private static func offsetNumber(_ value: Double) -> String {
+        let normalized = abs(value) < 0.0000005 ? 0 : value
+        var text = String(
+            format: "%.6f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            normalized
+        )
+        while text.hasSuffix("0") { text.removeLast() }
+        if text.hasSuffix(".") { text.removeLast() }
+        return text
     }
 
     // MARK: - Color merging

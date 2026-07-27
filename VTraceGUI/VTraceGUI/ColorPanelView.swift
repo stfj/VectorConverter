@@ -7,10 +7,15 @@
 
 import SwiftUI
 import Foundation
-import UniformTypeIdentifiers
 
 struct ColorPanelView: View {
     @Bindable var model: AppModel
+    @State private var groupFrames: [String: CGRect] = [:]
+    @State private var ungroupFrame: CGRect = .zero
+    @State private var activeDrag: PaletteDragPayload?
+    @State private var dragLocation: CGPoint?
+    @State private var dropTargetGroupID: String?
+    @State private var isUngroupDropTarget = false
 
     private let columns = [
         GridItem(.adaptive(minimum: 72, maximum: 82), spacing: 7, alignment: .top),
@@ -31,7 +36,7 @@ struct ColorPanelView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "eye")
                         .foregroundStyle(.secondary)
-                    Text("Hover to highlight. Click to edit. Drag onto another color to group; the destination wins.")
+                    Text("Hover to highlight. Click to edit. Drag a tile onto another to group; drag a small swatch to move just that color.")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -42,15 +47,16 @@ struct ColorPanelView: View {
                         ColorGroupTile(
                             group: group,
                             isHighlighted: model.highlightedColorGroupID == group.id,
+                            isDropTarget: dropTargetGroupID == group.id,
+                            isPaletteDragging: activeDrag != nil,
                             setHighlight: {
                                 model.setColorHighlight(groupID: group.id)
                             },
                             clearHighlight: {
                                 model.clearColorHighlight(groupID: group.id)
                             },
-                            dropAction: { payload in
-                                accept(payload, onto: group)
-                            },
+                            dragChanged: updateDrag,
+                            dragEnded: finishDrag,
                             ungroupAction: { hex in
                                 model.ungroup(hex: hex)
                             },
@@ -69,9 +75,7 @@ struct ColorPanelView: View {
                     Spacer(minLength: 0)
                 }
 
-                UngroupDropZone { payload in
-                    ungroup(payload)
-                }
+                UngroupDropZone(isDropTarget: isUngroupDropTarget)
             } else if model.colorPalette.count > 31 {
                 Label {
                     Text("Manual grouping is available when the post-smash palette contains 31 colors or fewer.")
@@ -87,8 +91,87 @@ struct ColorPanelView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .coordinateSpace(name: PaletteDragCoordinateSpace.name)
+        .onPreferenceChange(PaletteGroupFramesKey.self) {
+            groupFrames = $0
+        }
+        .onPreferenceChange(PaletteUngroupFrameKey.self) {
+            ungroupFrame = $0
+        }
+        .overlay(alignment: .topLeading) {
+            dragPreview
+        }
+        .onDisappear(perform: resetDrag)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Color groups")
+    }
+
+    @ViewBuilder
+    private var dragPreview: some View {
+        if let payload = activeDrag, let location = dragLocation {
+            let sourceGroup = model.manualColorGroups.first {
+                $0.members.contains(where: { $0.hex == payload.hex })
+            }
+            GroupDragPreview(
+                hex: payload.kind == .group
+                    ? sourceGroup?.colorHex ?? payload.hex
+                    : payload.hex,
+                count: payload.kind == .group
+                    ? sourceGroup?.members.count ?? 1
+                    : 1
+            )
+            .position(x: location.x + 12, y: location.y + 12)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+
+    private func updateDrag(_ payload: PaletteDragPayload, at location: CGPoint) {
+        if activeDrag == nil {
+            model.clearColorHighlight()
+        }
+        activeDrag = payload
+        dragLocation = location
+        dropTargetGroupID = groupTarget(for: payload, at: location)?.id
+        isUngroupDropTarget = ungroupFrame.contains(location)
+    }
+
+    private func finishDrag(_ payload: PaletteDragPayload, at location: CGPoint) {
+        if let target = groupTarget(for: payload, at: location) {
+            _ = accept(payload, onto: target)
+        } else if ungroupFrame.contains(location) {
+            _ = ungroup(payload)
+        }
+        resetDrag()
+    }
+
+    private func groupTarget(
+        for payload: PaletteDragPayload,
+        at location: CGPoint
+    ) -> ManualColorGroup? {
+        guard let targetID = groupFrames.first(where: {
+            $0.value.contains(location)
+        })?.key,
+        let target = model.manualColorGroups.first(where: { $0.id == targetID })
+        else {
+            return nil
+        }
+
+        switch payload.kind {
+        case .group:
+            return payload.hex == target.id ? nil : target
+        case .member:
+            return target.members.contains(where: { $0.hex == payload.hex })
+                ? nil
+                : target
+        }
+    }
+
+    private func resetDrag() {
+        activeDrag = nil
+        dragLocation = nil
+        dropTargetGroupID = nil
+        isUngroupDropTarget = false
     }
 
     private func accept(_ payload: PaletteDragPayload,
@@ -103,13 +186,10 @@ struct ColorPanelView: View {
             guard !target.members.contains(where: { $0.hex == payload.hex }) else {
                 return false
             }
-
-            // Pull the member out first. This matters when it is also its old
-            // group's representative: `group` can then treat it as one color
-            // instead of moving the entire old group.
-            model.ungroup(hex: payload.hex)
-            model.group(sourceHex: payload.hex, ontoTargetHex: target.id)
-            return true
+            return model.moveColorMember(
+                payload.hex,
+                ontoTargetHex: target.id
+            )
         }
     }
 
@@ -132,31 +212,53 @@ struct ColorPanelView: View {
 private struct ColorGroupTile: View {
     let group: ManualColorGroup
     let isHighlighted: Bool
+    let isDropTarget: Bool
+    let isPaletteDragging: Bool
     let setHighlight: () -> Void
     let clearHighlight: () -> Void
-    let dropAction: (PaletteDragPayload) -> Bool
+    let dragChanged: (PaletteDragPayload, CGPoint) -> Void
+    let dragEnded: (PaletteDragPayload, CGPoint) -> Void
     let ungroupAction: (String) -> Void
     let colorAction: (String) -> Void
 
-    @State private var isDropTarget = false
     @State private var isEditingColor = false
 
     private let memberColumns = [
-        GridItem(.adaptive(minimum: 15, maximum: 17), spacing: 3),
+        GridItem(.adaptive(minimum: 22, maximum: 24), spacing: 4),
     ]
 
     var body: some View {
         tileContent
             .padding(6)
-            .frame(maxWidth: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, minHeight: 72, alignment: .top)
             .background(tileBackground)
-            .overlay(tileBorder)
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-            .onDrop(of: PaletteDragPayload.supportedTypes,
-                    isTargeted: $isDropTarget) { providers in
-                PaletteDragPayload.load(from: providers, perform: dropAction)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: PaletteGroupFramesKey.self,
+                        value: [
+                            group.id: proxy.frame(
+                                in: .named(PaletteDragCoordinateSpace.name)
+                            ),
+                        ]
+                    )
+                }
             }
+            .overlay(tileBorder)
+            .overlay(alignment: .center) {
+                if isDropTarget {
+                    Text("GROUP HERE")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.accentColor, in: Capsule())
+                        .allowsHitTesting(false)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8))
             .onHover { hovering in
+                guard !isPaletteDragging else { return }
                 if hovering {
                     setHighlight()
                 } else {
@@ -219,15 +321,20 @@ private struct ColorGroupTile: View {
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+
+            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 54)
         .contentShape(Rectangle())
         .onTapGesture(perform: openEditor)
-        .onDrag {
-            PaletteDragPayload(kind: .group, hex: group.id).itemProvider
-        } preview: {
-            GroupDragPreview(hex: group.colorHex, count: group.members.count)
-        }
+        .paletteDragSource(
+            PaletteDragPayload(kind: .group, hex: group.id),
+            changed: dragChanged,
+            ended: dragEnded
+        )
         .help("Hover to highlight \(group.colorHex.uppercased()). Click to edit; drag onto another color to group.")
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
@@ -244,6 +351,8 @@ private struct ColorGroupTile: View {
                     color: member,
                     isGrouped: group.members.count > 1,
                     edit: openEditor,
+                    dragChanged: dragChanged,
+                    dragEnded: dragEnded,
                     ungroup: { ungroupAction(member.hex) }
                 )
             }
@@ -292,6 +401,8 @@ private struct PaletteMemberSwatch: View {
     let color: PaletteColor
     let isGrouped: Bool
     let edit: () -> Void
+    let dragChanged: (PaletteDragPayload, CGPoint) -> Void
+    let dragEnded: (PaletteDragPayload, CGPoint) -> Void
     let ungroup: () -> Void
 
     var body: some View {
@@ -305,22 +416,15 @@ private struct PaletteMemberSwatch: View {
 
     private var swatch: some View {
         HexColorSwatch(hex: color.hex)
-            .frame(width: 17, height: 17)
+            .frame(width: 24, height: 24)
             .contentShape(Rectangle())
             .onTapGesture(perform: edit)
             .help("\(color.hex.uppercased()) — \(color.count) shape\(color.count == 1 ? "" : "s"). Hover to highlight its group; click to edit; drag to regroup.")
-            .onDrag {
-                PaletteDragPayload(kind: .member, hex: color.hex).itemProvider
-            } preview: {
-                VStack(spacing: 4) {
-                    HexColorSwatch(hex: color.hex)
-                        .frame(width: 30, height: 30)
-                    Text(color.hex.uppercased())
-                        .font(.caption2.monospaced())
-                }
-                .padding(7)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-            }
+            .paletteDragSource(
+                PaletteDragPayload(kind: .member, hex: color.hex),
+                changed: dragChanged,
+                ended: dragEnded
+            )
             .contextMenu {
                 if isGrouped {
                     Button("Remove from Group") {
@@ -340,9 +444,7 @@ private struct PaletteMemberSwatch: View {
 }
 
 private struct UngroupDropZone: View {
-    let dropAction: (PaletteDragPayload) -> Bool
-
-    @State private var isDropTarget = false
+    let isDropTarget: Bool
 
     var body: some View {
         HStack(spacing: 7) {
@@ -369,9 +471,15 @@ private struct UngroupDropZone: View {
                     style: StrokeStyle(lineWidth: isDropTarget ? 2 : 1, dash: [4, 3])
                 )
         }
-        .onDrop(of: PaletteDragPayload.supportedTypes,
-                isTargeted: $isDropTarget) { providers in
-            PaletteDragPayload.load(from: providers, perform: dropAction)
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: PaletteUngroupFrameKey.self,
+                    value: proxy.frame(
+                        in: .named(PaletteDragCoordinateSpace.name)
+                    )
+                )
+            }
         }
         .animation(.easeOut(duration: 0.12), value: isDropTarget)
         .accessibilityElement(children: .combine)
@@ -588,7 +696,7 @@ private struct HexColorSwatch: View {
     }
 }
 
-private enum PaletteDragKind: String, Codable {
+private enum PaletteDragKind: String {
     case group
     case member
 }
@@ -601,64 +709,51 @@ private struct PaletteDragPayload {
         self.kind = kind
         self.hex = PaletteHex.normalize(hex) ?? hex
     }
+}
 
-    /// Use AppKit's direct data-provider path rather than SwiftUI's Codable
-    /// Transferable bridge, which is unreliable inside this macOS ScrollView.
-    var itemProvider: NSItemProvider {
-        let provider = NSItemProvider()
-        let data = Data(encoded.utf8)
-        provider.registerDataRepresentation(
-            forTypeIdentifier: Self.dragType.identifier,
-            visibility: .ownProcess
-        ) { completion in
-            completion(data, nil)
-            return nil
-        }
-        return provider
+private enum PaletteDragCoordinateSpace {
+    static let name = "manual-color-palette"
+}
+
+private struct PaletteGroupFramesKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(
+        value: inout [String: CGRect],
+        nextValue: () -> [String: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
+}
 
-    private static let dragType = UTType(
-        exportedAs: "com.zachgage.vectorconverter.palette-color-v1"
-    )
-    static let supportedTypes = [dragType]
+private struct PaletteUngroupFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
 
-    static func load(from providers: [NSItemProvider],
-                     perform action: @escaping (PaletteDragPayload) -> Bool) -> Bool {
-        guard let provider = providers.first(where: {
-            $0.hasItemConformingToTypeIdentifier(dragType.identifier)
-        }) else {
-            return false
-        }
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        value = nextValue()
+    }
+}
 
-        provider.loadDataRepresentation(
-            forTypeIdentifier: dragType.identifier
-        ) { data, _ in
-            guard let data,
-                  let text = String(data: data, encoding: .utf8),
-                  let payload = PaletteDragPayload(encoded: text) else { return }
-            Task { @MainActor in
-                _ = action(payload)
+private extension View {
+    func paletteDragSource(
+        _ payload: PaletteDragPayload,
+        changed: @escaping (PaletteDragPayload, CGPoint) -> Void,
+        ended: @escaping (PaletteDragPayload, CGPoint) -> Void
+    ) -> some View {
+        // Run beside the existing tap-to-edit gesture. A normal click never
+        // reaches the five-point threshold; a drag cancels the platform tap.
+        simultaneousGesture(
+            DragGesture(
+                minimumDistance: 5,
+                coordinateSpace: .named(PaletteDragCoordinateSpace.name)
+            )
+            .onChanged { value in
+                changed(payload, value.location)
             }
-        }
-        return true
-    }
-
-    private static let prefix = "vectorconverter-palette-v1"
-
-    private var encoded: String {
-        "\(Self.prefix)|\(kind.rawValue)|\(hex)"
-    }
-
-    private init?(encoded: String) {
-        let pieces = encoded.split(separator: "|", omittingEmptySubsequences: false)
-        guard pieces.count == 3,
-              pieces[0] == Substring(Self.prefix),
-              let kind = PaletteDragKind(rawValue: String(pieces[1])),
-              let hex = PaletteHex.normalize(String(pieces[2])) else {
-            return nil
-        }
-        self.kind = kind
-        self.hex = hex
+            .onEnded { value in
+                ended(payload, value.location)
+            }
+        )
     }
 }
 

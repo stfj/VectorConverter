@@ -101,7 +101,7 @@ struct ControlsView: View {
                 } else if !model.lassoSelection.isEmpty {
                     lassoPanel
                 } else {
-                    Text("Choose tools from the left toolbar. V selects shapes, Z zooms (⌥ zooms out), W lassos, A edits points, and H or Space pans. Select one shape, then press B to choose the brush; press B again to toggle Add/Remove, or hold ⌥ for Remove temporarily. [ and ] resize it.")
+                    Text("Choose tools from the left toolbar. V selects and drags shapes, Z zooms (⌥ zooms out), W lassos, A edits points, and H or Space pans. Select one shape, then press B to choose the brush; press B again to toggle Add/Remove, or hold ⌥ for Remove temporarily. [ and ] resize it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

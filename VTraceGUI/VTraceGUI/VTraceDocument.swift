@@ -23,8 +23,19 @@ enum VTraceDocumentError: LocalizedError {
     }
 }
 
+/// A user-authored translation kept separate from a path's geometry. Keeping
+/// this in root-SVG coordinates lets simplification and point/brush edits keep
+/// operating on the original local shape without slowly baking movement into
+/// its `d` data.
+nonisolated struct ShapeOffset: Codable, Equatable, Sendable {
+    var x: Double
+    var y: Double
+
+    static let zero = ShapeOffset(x: 0, y: 0)
+}
+
 struct VTraceDocument: Codable {
-    static let currentVersion = 2
+    static let currentVersion = 3
 
     /// Filename extension and panel type for `.vtrace` design files.
     static let fileExtension = "vtrace"
@@ -52,6 +63,9 @@ struct VTraceDocument: Codable {
     var pathOverrides: [Int: SimplificationSettings]
     var editedGeometry: [Int: String]
     var deletedPaths: [Int]
+    /// Optional keeps version-1/2 documents decodable. New saves always store
+    /// each shape's root-SVG translation independently from its geometry.
+    var pathOffsets: [Int: ShapeOffset]? = nil
     /// Optional keeps version-1 documents decodable. New saves always include
     /// the user's manual palette groups and custom group colors.
     var manualColorGroupRules: [ManualColorGroupRule]? = nil

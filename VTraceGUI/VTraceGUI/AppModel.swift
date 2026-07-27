@@ -94,6 +94,11 @@ final class AppModel {
     /// changes. Cleared only on re-trace, when raw shape identity changes.
     private(set) var editedGeometry: [Int: String] = [:]
 
+    /// User-authored translations in root-SVG coordinates. These are applied
+    /// after simplification instead of being baked into `editedGeometry`, so
+    /// later geometry changes cannot shift the shape or compound its movement.
+    private(set) var pathOffsets: [Int: ShapeOffset] = [:]
+
     /// Per-shape simplification settings, keyed by path index in the raw SVG.
     /// Cleared whenever vtracer re-runs, since shape identity changes.
     private(set) var pathOverrides: [Int: SimplificationSettings] = [:]
@@ -102,10 +107,12 @@ final class AppModel {
     private(set) var deletedPaths: Set<Int> = []
 
     /// Reversible edit history for ⌘Z. A wand delete restores its whole group;
-    /// point and brush edits restore the prior baked geometry for one shape.
+    /// point and brush edits restore geometry, and moves restore the prior
+    /// separately-stored translation for one shape.
     private enum EditAction {
         case deleteShapes([Int])
         case changeGeometry(path: Int, previous: String?)
+        case moveShape(path: Int, previous: ShapeOffset?)
     }
     private var undoStack: [EditAction] = []
 
@@ -384,6 +391,12 @@ final class AppModel {
     }
 
     var brushInteractionEnabled: Bool { editingInteractionEnabled }
+    var shapeMoveInteractionEnabled: Bool {
+        editingInteractionEnabled &&
+            !isBrushProcessing &&
+            !isPostProcessPending &&
+            !isConverting
+    }
 
     var canUndoDeletion: Bool {
         isBrushProcessing || (editingInteractionEnabled && !undoStack.isEmpty)
@@ -411,6 +424,9 @@ final class AppModel {
             }
         case .changeGeometry(let path, let previous):
             editedGeometry[path] = previous
+            selectPath(path)
+        case .moveShape(let path, let previous):
+            pathOffsets[path] = previous
             selectPath(path)
         }
         schedulePostProcess()
@@ -703,8 +719,8 @@ final class AppModel {
         highlightedColorGroupID = nil
     }
 
-    /// Merges the source group into the destination group. Member drags first
-    /// call `ungroup`, so they move one post-smash color; group drags move all members.
+    /// Merges the entire source group into the destination group. Single
+    /// member moves use `moveColorMember` below.
     func group(sourceHex: String, ontoTargetHex targetHex: String) {
         guard editingInteractionEnabled,
               canShowManualColorPanel,
@@ -732,6 +748,54 @@ final class AppModel {
             colorHex: targetGroup.colorHex
         ))
         finishManualColorChange()
+    }
+
+    /// Moves exactly one post-smash color into a destination group as a
+    /// single model mutation. This avoids briefly publishing an ungrouped
+    /// intermediate state (and scheduling two post-process passes).
+    @discardableResult
+    func moveColorMember(_ sourceHex: String,
+                         ontoTargetHex targetHex: String) -> Bool {
+        guard editingInteractionEnabled,
+              canShowManualColorPanel,
+              let source = PaletteHex.normalize(sourceHex),
+              let target = PaletteHex.normalize(targetHex),
+              let sourceGroup = manualColorGroups.first(where: {
+                  $0.members.contains(where: { $0.hex == source })
+              }),
+              let targetGroup = manualColorGroups.first(where: {
+                  $0.members.contains(where: { $0.hex == target })
+              }),
+              sourceGroup.id != targetGroup.id else {
+            return false
+        }
+
+        highlightedColorGroupID = nil
+        let sourceMembers = sourceGroup.members.map(\.hex)
+        let targetMembers = targetGroup.members.map(\.hex)
+        let touched = Set(sourceMembers + targetMembers)
+        manualColorGroupRules.removeAll {
+            !$0.members.allSatisfy { !touched.contains($0) }
+        }
+
+        let remaining = sourceMembers.filter { $0 != source }
+        if let first = remaining.first {
+            let wasCustom = sourceGroup.colorHex != sourceGroup.id
+            let remainingColor = wasCustom ? sourceGroup.colorHex : first
+            if remaining.count > 1 || remainingColor != first {
+                manualColorGroupRules.append(ManualColorGroupRule(
+                    members: remaining,
+                    colorHex: remainingColor
+                ))
+            }
+        }
+
+        manualColorGroupRules.append(ManualColorGroupRule(
+            members: targetMembers + [source],
+            colorHex: targetGroup.colorHex
+        ))
+        finishManualColorChange()
+        return true
     }
 
     /// Extracts one post-smash color from its group. The remaining group's first
@@ -856,6 +920,35 @@ final class AppModel {
         if !indices.isEmpty { selectedPathIndex = nil }
     }
 
+    /// Commits one cursor-tool drag as a root-SVG translation. The preview
+    /// applies the same delta live; the post-process then rebuilds the SVG from
+    /// the untouched path geometry plus this stored offset.
+    func movePath(_ index: Int,
+                  byX deltaX: Double,
+                  y deltaY: Double,
+                  previewRevision messageRevision: Int) {
+        guard messageRevision == previewRevision,
+              shapeMoveInteractionEnabled,
+              index >= 0, index < pathCount,
+              !deletedPaths.contains(index),
+              deltaX.isFinite, deltaY.isFinite,
+              abs(deltaX) > 1e-9 || abs(deltaY) > 1e-9 else { return }
+
+        let previous = pathOffsets[index]
+        let current = previous ?? .zero
+        let next = ShapeOffset(x: current.x + deltaX, y: current.y + deltaY)
+        guard next.x.isFinite, next.y.isFinite else { return }
+
+        undoStack.append(.moveShape(path: index, previous: previous))
+        if abs(next.x) <= 1e-9 && abs(next.y) <= 1e-9 {
+            pathOffsets.removeValue(forKey: index)
+        } else {
+            pathOffsets[index] = next
+        }
+        selectPath(index)
+        schedulePostProcess()
+    }
+
     // MARK: - Image input
 
     func loadImage(from url: URL) {
@@ -906,6 +999,7 @@ final class AppModel {
         selectedAnchors = []
         pathOverrides = [:]
         editedGeometry = [:]
+        pathOffsets = [:]
         deletedPaths = []
         undoStack = []
         currentDesignURL = nil
@@ -1059,6 +1153,7 @@ final class AppModel {
             pathOverrides: pathOverrides,
             editedGeometry: editedGeometry,
             deletedPaths: deletedPaths.sorted(),
+            pathOffsets: pathOffsets,
             manualColorGroupRules: manualColorGroupRules,
             originalPixelWidth: Int(original.width),
             originalPixelHeight: Int(original.height),
@@ -1126,6 +1221,9 @@ final class AppModel {
         outputColorCount = 0
         pathOverrides = document.pathOverrides
         editedGeometry = document.editedGeometry
+        pathOffsets = (document.pathOffsets ?? [:]).filter {
+            $0.key >= 0 && $0.value.x.isFinite && $0.value.y.isFinite
+        }
         deletedPaths = Set(document.deletedPaths)
         manualColorGroupRules = document.manualColorGroupRules ?? []
         colorPalette = []
@@ -1355,6 +1453,7 @@ final class AppModel {
                 selectedAnchors = []
                 pathOverrides = [:]
                 editedGeometry = [:]
+                pathOffsets = [:]
                 deletedPaths = []
                 colorPalette = []
                 highlightedColorGroupID = nil
@@ -1444,10 +1543,12 @@ final class AppModel {
         let overrides = pathOverrides
         let deleted = deletedPaths
         let edited = editedGeometry
+        let offsets = pathOffsets
         let manualColors = manualColorMapping
         let work = Task.detached(priority: .userInitiated) {
             SVGSimplifier.process(raw, settings: simplify, overrides: overrides,
                                   deleted: deleted, editedGeometry: edited,
+                                  shapeOffsets: offsets,
                                   manualColors: manualColors)
         }
         postProcessWork = work
