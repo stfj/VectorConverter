@@ -97,9 +97,7 @@ struct ControlsView: View {
                 }
 
                 if model.colorCount > 1 {
-                    SliderRow(label: "Colors", hint: "Smash similar",
-                              value: colorsBinding,
-                              range: 1...Double(model.colorCount))
+                    colorsSliderRow
                 }
 
                 if let index = model.selectedPathIndex {
@@ -107,7 +105,7 @@ struct ControlsView: View {
                 } else if !model.lassoSelection.isEmpty {
                     lassoPanel
                 } else {
-                    Text("Click a shape in the preview to see its control points and simplify it individually. Delete removes it. Z = zoom tool (⌥ zooms out), V = cursor, W = magic wand lasso (scroll to set the size cutoff), A = edit points (select a shape first, then click its points), hold Space to pan.")
+                    Text("Choose tools from the left toolbar. V selects shapes, Z zooms (⌥ zooms out), W lassos, A edits points, and H or Space pans. Select one shape, then use B to paint onto it or E to erase from it; [ and ] resize both brushes.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -208,6 +206,15 @@ struct ControlsView: View {
                     }
                 }
             }
+
+            if model.previewTool.isBrush {
+                Divider()
+                Text(model.previewTool == .addBrush
+                     ? "Add brush — paint anywhere to merge a round stroke into this shape. Use [ and ] to resize."
+                     : "Subtract brush — paint across this shape to cut the round stroke out. Use [ and ] to resize.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(10)
         .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
@@ -244,18 +251,53 @@ struct ControlsView: View {
         }
     }
 
-    /// Slider position for the color budget: the right end (= every color in
-    /// the trace) stores 0, meaning "no merging".
-    private var colorsBinding: Binding<Double> {
+    private var colorsSliderRow: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text("Colors")
+                    .font(.callout.weight(.medium))
+                Text("(Smash similar)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(displayedColorBudget, format: .number.grouping(.never))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: colorsSliderPosition, in: 0...1)
+                .accessibilityLabel("Colors")
+                .accessibilityValue("\(displayedColorBudget)")
+        }
+    }
+
+    /// The effective integer budget shown to the user. A stored value of zero
+    /// means every traced color is retained.
+    private var displayedColorBudget: Int {
+        let total = max(model.colorCount, 1)
+        let stored = Int(model.simplification.maxColors.rounded())
+        return stored <= 0 ? total : min(max(stored, 1), total)
+    }
+
+    /// A logarithmic slider gives small color budgets substantially more room
+    /// while still fitting traces with thousands of colors. The right endpoint
+    /// stores 0, preserving the model's "no merging" sentinel.
+    private var colorsSliderPosition: Binding<Double> {
         Binding(
             get: {
-                let total = Double(model.colorCount)
-                let budget = model.simplification.maxColors
-                return budget == 0 ? total : min(budget, total)
+                let total = Double(max(model.colorCount, 2))
+                return log(Double(displayedColorBudget)) / log(total)
             },
-            set: { newValue in
-                model.simplification.maxColors =
-                    newValue >= Double(model.colorCount) ? 0 : newValue.rounded()
+            set: { newPosition in
+                let total = Double(max(model.colorCount, 2))
+                let position = min(max(newPosition, 0), 1)
+
+                if position >= 0.999_999 {
+                    model.simplification.maxColors = 0
+                    return
+                }
+
+                let budget = exp(log(total) * position).rounded()
+                model.simplification.maxColors = min(max(budget, 1), total - 1)
             }
         )
     }

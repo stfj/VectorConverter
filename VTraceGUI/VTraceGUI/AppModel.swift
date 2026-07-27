@@ -12,6 +12,13 @@ enum PreviewTool {
     case zoom
     case wand
     case anchor
+    case hand
+    case addBrush
+    case subtractBrush
+
+    var isBrush: Bool {
+        self == .addBrush || self == .subtractBrush
+    }
 }
 
 @MainActor
@@ -41,12 +48,15 @@ final class AppModel {
         }
     }
 
-    /// Active preview tool: cursor selects shapes, zoom clicks zoom in
-    /// (⌥-click zooms out), wand lassos shapes, anchor edits points.
-    /// Z/V/W/A switch tools.
+    /// Active preview tool. The left palette and V/Z/W/A/H/B/E switch among
+    /// selection, navigation, point editing, and the two shape brushes.
     private(set) var previewTool = PreviewTool.cursor {
         didSet { if previewTool != oldValue { selectedAnchors = [] } }
     }
+
+    /// Diameter of both shape brushes, measured in source/SVG pixels.
+    /// The preview turns this into a zoom-aware circular cursor.
+    private(set) var brushSize = 32.0
 
     /// True while the space bar is held: temporary hand tool for panning,
     /// also hides the selected shape's control points.
@@ -80,11 +90,11 @@ final class AppModel {
     /// Raw-SVG indices of shapes the user deleted. Cleared on re-trace.
     private(set) var deletedPaths: Set<Int> = []
 
-    /// Reversible edit history for ⌘Z. A wand delete restores its whole group
-    /// at once; a point delete restores exactly the anchors it removed.
+    /// Reversible edit history for ⌘Z. A wand delete restores its whole group;
+    /// point and brush edits restore the prior baked geometry for one shape.
     private enum EditAction {
         case deleteShapes([Int])
-        case deletePoints(path: Int, previous: String?)
+        case changeGeometry(path: Int, previous: String?)
     }
     private var undoStack: [EditAction] = []
 
@@ -164,24 +174,24 @@ final class AppModel {
         guard let window = event.window, !(window is NSPanel) else { return event }
         if window.firstResponder is NSTextView { return event }
 
-        // Tool switching: plain Z / V (no modifiers, so ⌘Z stays undo).
+        // Tool switching and brush sizing. No command/option/control modifiers,
+        // so app shortcuts such as ⌘Z and ⌘E keep their normal meanings.
         if event.type == .keyDown,
            event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
            let key = event.charactersIgnoringModifiers?.lowercased() {
-            if key == "z" {
-                previewTool = .zoom
-                return nil
+            switch key {
+            case "z": selectTool(.zoom)
+            case "v": selectTool(.cursor)
+            case "w": selectTool(.wand)
+            case "a": selectTool(.anchor)
+            case "h": selectTool(.hand)
+            case "b": selectTool(.addBrush)
+            case "e": selectTool(.subtractBrush)
+            case "[": adjustBrushSize(growing: false)
+            case "]": adjustBrushSize(growing: true)
+            default: break
             }
-            if key == "v" {
-                previewTool = .cursor
-                return nil
-            }
-            if key == "w" {
-                previewTool = .wand
-                return nil
-            }
-            if key == "a" {
-                previewTool = .anchor
+            if ["z", "v", "w", "a", "h", "b", "e", "[", "]"].contains(key) {
                 return nil
             }
         }
@@ -254,7 +264,7 @@ final class AppModel {
         let edited = SVGSimplifier.removeAnchors(displayed, selectedAnchors)
         selectedAnchors = []
         guard edited != displayed else { return }
-        undoStack.append(.deletePoints(path: shape, previous: editedGeometry[shape]))
+        undoStack.append(.changeGeometry(path: shape, previous: editedGeometry[shape]))
         editedGeometry[shape] = edited
         schedulePostProcess()
     }
@@ -268,6 +278,20 @@ final class AppModel {
         let matches = regex.matches(in: svgText, range: NSRange(location: 0, length: ns.length))
         guard index >= 0, index < matches.count else { return nil }
         return ns.substring(with: matches[index].range(at: 1))
+    }
+
+    /// Immediately mirrors a baked edit into the displayed SVG. The normal
+    /// post-process still follows, but this makes brush feedback instant and
+    /// ensures another fast stroke starts from the geometry the user can see.
+    private func replaceCurrentPathD(_ index: Int, with d: String) {
+        guard let svgText else { return }
+        let ns = svgText as NSString
+        let regex = try! NSRegularExpression(pattern: "d=\"([^\"]*)\"")
+        let matches = regex.matches(in: svgText, range: NSRange(location: 0, length: ns.length))
+        guard index >= 0, index < matches.count else { return }
+        let output = NSMutableString(string: svgText)
+        output.replaceCharacters(in: matches[index].range(at: 1), with: d)
+        self.svgText = output as String
     }
 
     func setSelectedAnchors(_ indices: Set<Int>) {
@@ -287,10 +311,60 @@ final class AppModel {
             } else {
                 setLassoSelection(Set(group))
             }
-        case .deletePoints(let path, let previous):
+        case .changeGeometry(let path, let previous):
             editedGeometry[path] = previous
             selectPath(path)
         }
+        schedulePostProcess()
+    }
+
+    // MARK: - Preview tools
+
+    func selectTool(_ tool: PreviewTool) {
+        previewTool = tool
+    }
+
+    func adjustBrushSize(growing: Bool) {
+        let proposed = growing ? ceil(brushSize * 1.2) : floor(brushSize / 1.2)
+        let stepped: Double
+        if proposed == brushSize {
+            stepped = brushSize + (growing ? 1 : -1)
+        } else {
+            stepped = proposed
+        }
+        let imageLimit = sourcePixelSize.map { max(Double($0.width), Double($0.height)) } ?? 512
+        brushSize = min(max(imageLimit, 512), max(1, stepped))
+    }
+
+    /// Bakes one completed round brush gesture into the selected shape. Each
+    /// gesture is a single undo step and uses the same persistence path as
+    /// anchor edits, so it survives simplification changes and design saves.
+    func applyBrushStroke(to pathIndex: Int,
+                          points: [CGPoint],
+                          diameter: Double,
+                          pathTransform: CGAffineTransform,
+                          operation: ShapeBrushOperation) {
+        guard selectedPathIndex == pathIndex,
+              !lassoSelection.contains(pathIndex),
+              !points.isEmpty else { return }
+
+        guard let base = currentPathD(pathIndex) else { return }
+        guard let edited = ShapeBrushGeometry.apply(
+            to: base,
+            points: points,
+            diameter: CGFloat(diameter),
+            pathTransform: pathTransform,
+            operation: operation
+        ) else {
+            errorMessage = "That shape could not be edited with the brush."
+            return
+        }
+        guard edited != base else { return }
+
+        selectedAnchors = []
+        undoStack.append(.changeGeometry(path: pathIndex, previous: editedGeometry[pathIndex]))
+        editedGeometry[pathIndex] = edited
+        replaceCurrentPathD(pathIndex, with: edited)
         schedulePostProcess()
     }
 

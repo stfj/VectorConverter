@@ -18,7 +18,7 @@ struct VTraceGUIApp: App {
         // this one window's model.
         Window("VTraceGUI", id: "main") {
             ContentView(model: model)
-                .frame(minWidth: 820, minHeight: 520)
+                .frame(minWidth: 890, minHeight: 520)
                 .onAppear {
                     // Finder double-clicks / "Open With" arrive via the app
                     // delegate; route any (including one buffered before the

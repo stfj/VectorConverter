@@ -2,11 +2,16 @@ mac os x gui for converting raster images to vector
 
 paste or drag a bitmap in.
 command-c or command-s to get a svg out.
-space bar to pan / hide control points
-z to zoom tool
-v to cursor tool
-w to magic wand lasso — drag around shapes, scroll to set the size cutoff so only small shapes stay selected
-a to edit points — select a shape with v first, then click its anchor points and delete them (the shape stays connected)
+use the thin two-column toolbar on the left, or:
+
+- space to temporarily pan / hide control points
+- h for the persistent hand tool
+- z for the zoom tool
+- v for the cursor tool
+- w for the magic wand lasso — drag around shapes, scroll to set the size cutoff so only small shapes stay selected
+- a to edit points — select a shape with v first, then click its anchor points and delete them (the shape stays connected)
+- b for the add brush and e for the subtract brush — select one shape first, then paint to merge into or cut out of it
+- [ and ] to resize both brushes
 
 delete / command-z to delete shapes you dont want or undo that.
 

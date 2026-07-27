@@ -11,10 +11,15 @@ struct ContentView: View {
     @State private var isDropTargeted = false
 
     var body: some View {
-        HSplitView {
-            previewArea
-                .frame(minWidth: 480, maxWidth: .infinity, minHeight: 420, maxHeight: .infinity)
-            ControlsView(model: model)
+        HStack(spacing: 0) {
+            ToolPaletteView(model: model)
+            Divider()
+            HSplitView {
+                previewArea
+                    .frame(minWidth: 480, maxWidth: .infinity,
+                           minHeight: 420, maxHeight: .infinity)
+                ControlsView(model: model)
+            }
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -161,6 +166,28 @@ struct ContentView: View {
                         .foregroundStyle(Color.accentColor)
                 } else {
                     Text("point tool — select a shape with V first, then press A")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            if model.previewTool == .hand {
+                Text("hand tool — drag to pan, V for cursor")
+                    .foregroundStyle(Color.accentColor)
+            }
+            if model.previewTool == .addBrush {
+                if model.selectedPathIndex == nil {
+                    Text("add brush — select a shape with V first — [ ] resize (\(Int(model.brushSize)) px)")
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text("add brush — paint onto the selected shape — [ ] resize (\(Int(model.brushSize)) px)")
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            if model.previewTool == .subtractBrush {
+                if model.selectedPathIndex == nil {
+                    Text("subtract brush — select a shape with V first — [ ] resize (\(Int(model.brushSize)) px)")
+                        .foregroundStyle(Color.accentColor)
+                } else {
+                    Text("subtract brush — erase from the selected shape — [ ] resize (\(Int(model.brushSize)) px)")
                         .foregroundStyle(Color.accentColor)
                 }
             }

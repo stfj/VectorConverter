@@ -57,6 +57,7 @@ struct SVGPreviewView: NSViewRepresentable {
         configuration.userContentController.add(context.coordinator, name: "pathClick")
         configuration.userContentController.add(context.coordinator, name: "lassoSelect")
         configuration.userContentController.add(context.coordinator, name: "anchorSelect")
+        configuration.userContentController.add(context.coordinator, name: "brushStroke")
         let webView = ImageDropWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         let model = model
@@ -73,6 +74,7 @@ struct SVGPreviewView: NSViewRepresentable {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "pathClick")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "lassoSelect")
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "anchorSelect")
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "brushStroke")
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
@@ -108,8 +110,15 @@ struct SVGPreviewView: NSViewRepresentable {
             case .zoom: name = "zoom"
             case .wand: name = "wand"
             case .anchor: name = "anchor"
+            case .hand: name = "hand"
+            case .addBrush: name = "brush-add"
+            case .subtractBrush: name = "brush-subtract"
             }
             coordinator.run(webView, "setTool('\(name)')")
+        }
+        if coordinator.sentBrushSize != model.brushSize {
+            coordinator.sentBrushSize = model.brushSize
+            coordinator.run(webView, "setBrushSize(\(model.brushSize))")
         }
         if coordinator.sentSelection != model.selectedPathIndex {
             coordinator.sentSelection = model.selectedPathIndex
@@ -137,6 +146,7 @@ struct SVGPreviewView: NSViewRepresentable {
         var sentSpaceDown = false
         var sentAltDown = false
         var sentTool = PreviewTool.cursor
+        var sentBrushSize = 0.0
         var sentSelection: Int?
         var sentLasso: Set<Int> = []
         var sentDeleted: Set<Int> = []
@@ -184,7 +194,46 @@ struct SVGPreviewView: NSViewRepresentable {
                 Task { @MainActor in
                     model.setSelectedAnchors(Set(indices))
                 }
+            } else if message.name == "brushStroke",
+                      let payload = message.body as? [String: Any],
+                      let pathIndex = number(payload["pathIndex"]).map(Int.init),
+                      let diameter = number(payload["diameter"]),
+                      let operationName = payload["operation"] as? String,
+                      let operation = ShapeBrushOperation(rawValue: operationName),
+                      let points = points(payload["points"]),
+                      let transform = transform(payload["localToRoot"]) {
+                Task { @MainActor in
+                    model.applyBrushStroke(to: pathIndex,
+                                           points: points,
+                                           diameter: diameter,
+                                           pathTransform: transform,
+                                           operation: operation)
+                }
             }
+        }
+
+        private func number(_ value: Any?) -> Double? {
+            if let number = value as? NSNumber { return number.doubleValue }
+            return value as? Double
+        }
+
+        private func points(_ value: Any?) -> [CGPoint]? {
+            guard let rows = value as? [Any] else { return nil }
+            let parsed = rows.compactMap { row -> CGPoint? in
+                guard let pair = row as? [Any], pair.count >= 2,
+                      let x = number(pair[0]), let y = number(pair[1]) else { return nil }
+                return CGPoint(x: x, y: y)
+            }
+            return parsed.isEmpty ? nil : parsed
+        }
+
+        private func transform(_ value: Any?) -> CGAffineTransform? {
+            guard let values = value as? [Any], values.count == 6 else { return nil }
+            let numbers = values.compactMap(number)
+            guard numbers.count == 6 else { return nil }
+            return CGAffineTransform(a: numbers[0], b: numbers[1],
+                                     c: numbers[2], d: numbers[3],
+                                     tx: numbers[4], ty: numbers[5])
         }
     }
 
@@ -229,7 +278,11 @@ struct SVGPreviewView: NSViewRepresentable {
             -webkit-user-drag: none;
             user-select: none;
         }
-        body.tool-zoom #overlay, body.tool-hand #overlay, body.tool-wand #overlay {
+        body.tool-zoom #overlay,
+        body.tool-hand #overlay,
+        body.tool-wand #overlay,
+        body.tool-brush-add #overlay,
+        body.tool-brush-subtract #overlay {
             pointer-events: none;
         }
         body.tool-zoom #stage { cursor: zoom-in; }
@@ -237,6 +290,8 @@ struct SVGPreviewView: NSViewRepresentable {
         body.tool-hand #stage { cursor: grab; }
         body.tool-hand.panning #stage { cursor: grabbing; }
         body.tool-wand #stage { cursor: crosshair; }
+        body.tool-brush-add #stage,
+        body.tool-brush-subtract #stage { cursor: none; }
         /* Point tool: shapes aren't click targets — only the anchor dots are. */
         body.tool-anchor #overlay svg > path { pointer-events: none; }
         body.tool-anchor #stage { cursor: crosshair; }
@@ -281,6 +336,38 @@ struct SVGPreviewView: NSViewRepresentable {
             fill: #ff0;
             fill-opacity: 0.5;
         }
+        #overlay svg > path.brush-target {
+            stroke: #0a84ff;
+            stroke-width: 1.5;
+            vector-effect: non-scaling-stroke;
+        }
+        #brushui {
+            pointer-events: none;
+        }
+        #brushcursor {
+            fill: rgba(255, 255, 255, 0.07);
+            stroke: rgba(255, 255, 255, 0.95);
+            stroke-width: 1;
+            vector-effect: non-scaling-stroke;
+        }
+        #brushcursor.add {
+            stroke: #30d158;
+        }
+        #brushcursor.subtract {
+            stroke: #ff453a;
+        }
+        #brushgesture {
+            fill: none;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            opacity: 0.4;
+        }
+        #brushgesture.add {
+            stroke: #30d158;
+        }
+        #brushgesture.subtract {
+            stroke: #ff453a;
+        }
         #wandhud {
             position: fixed;
             top: 14px;
@@ -318,9 +405,12 @@ struct SVGPreviewView: NSViewRepresentable {
         const wrap = document.getElementById('wrap');
         const raster = document.getElementById('raster');
         const overlay = document.getElementById('overlay');
+        const SVGNS = 'http://www.w3.org/2000/svg';
 
         function setImage(src) {
+            cancelBrushStroke();
             overlay.innerHTML = '';
+            resetBrushUI();
             raster.style.opacity = 1;
             raster.src = src;
             wrap.style.display = 'inline-block';
@@ -330,7 +420,12 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         function setSVG(text) {
+            // A prior stroke can finish processing while the user is already
+            // drawing the next one. Keep that live gesture across the DOM swap;
+            // its root-SVG coordinates remain valid against the new geometry.
+            const redrawLiveBrush = brushActive && brushPoints.length > 0;
             overlay.innerHTML = text;
+            resetBrushUI();
             const s = overlay.querySelector('svg');
             if (s) {
                 if (!s.getAttribute('viewBox')) {
@@ -345,6 +440,8 @@ struct SVGPreviewView: NSViewRepresentable {
             selectedAnchorSet.clear();
             anchorNearest = null;
             rebuildPoints();
+            if (redrawLiveBrush) drawBrushGesture();
+            updateBrushCursor(lastPointerX, lastPointerY);
         }
 
         function setConverting(on) {
@@ -355,32 +452,71 @@ struct SVGPreviewView: NSViewRepresentable {
             }
         }
 
-        // ---- Tools, zoom & pan ----
-        let tool = 'cursor';        // 'cursor' | 'zoom' | 'wand' | 'anchor'
-        let spaceDown = false;      // hand tool while held; also hides points
+        // ---- Tools, zoom, pan & shape brushes ----
+        let tool = 'cursor';
+        let spaceDown = false;      // temporary hand tool while held
         let altDown = false;
+        let brushSize = 32;         // root SVG/source pixels
         let scale = 1, tx = 0, ty = 0;
 
+        let brushActive = false;
+        let brushPoints = [];
+        let brushLastClient = null;
+        let brushUI = null, brushCursor = null, brushGesture = null;
+        let lastPointerX = null, lastPointerY = null;
+
+        function isBrushTool() {
+            return tool === 'brush-add' || tool === 'brush-subtract';
+        }
+
+        function isHandActive() {
+            return spaceDown || tool === 'hand';
+        }
+
         function setTool(t) {
+            if (brushActive) cancelBrushStroke();
             if (t !== 'anchor') selectedAnchorSet.clear();
             tool = t;
             updateToolClasses();
             rebuildPoints();
+            updateBrushCursor(lastPointerX, lastPointerY);
         }
-        function setSpaceDown(d) { spaceDown = d; updateToolClasses(); rebuildPoints(); }
-        function setAltDown(d) { altDown = d; updateToolClasses(); }
+
+        function setBrushSize(size) {
+            if (Number.isFinite(size) && size > 0) brushSize = size;
+            drawBrushGesture();
+            updateBrushCursor(lastPointerX, lastPointerY);
+        }
+
+        function setSpaceDown(d) {
+            if (d && brushActive) cancelBrushStroke();
+            spaceDown = d;
+            updateToolClasses();
+            rebuildPoints();
+            updateBrushCursor(lastPointerX, lastPointerY);
+        }
+
+        function setAltDown(d) {
+            altDown = d;
+            updateToolClasses();
+        }
 
         function updateToolClasses() {
             const b = document.body;
-            b.classList.toggle('tool-hand', spaceDown);
-            b.classList.toggle('tool-zoom', !spaceDown && tool === 'zoom');
-            b.classList.toggle('tool-wand', !spaceDown && tool === 'wand');
+            const hand = isHandActive();
+            b.classList.toggle('tool-hand', hand);
+            b.classList.toggle('tool-zoom', !hand && tool === 'zoom');
+            b.classList.toggle('tool-wand', !hand && tool === 'wand');
+            b.classList.toggle('tool-anchor', !hand && tool === 'anchor');
+            b.classList.toggle('tool-brush-add', !hand && tool === 'brush-add');
+            b.classList.toggle('tool-brush-subtract', !hand && tool === 'brush-subtract');
             b.classList.toggle('alt', altDown);
         }
 
         function applyTransform() {
             wrap.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
             rebuildPoints();   // keep point markers a constant screen size
+            updateBrushCursor(lastPointerX, lastPointerY);
         }
 
         function resetView() {
@@ -400,10 +536,201 @@ struct SVGPreviewView: NSViewRepresentable {
             applyTransform();
         }
 
+        function selectedBrushPath() {
+            if (wandMode || selectedIndices.length !== 1) return null;
+            const paths = shapePaths();
+            const path = paths[selectedIndices[0]];
+            if (!path || path.style.display === 'none') return null;
+            return path;
+        }
+
+        function activeSVG() {
+            return overlay.querySelector('svg');
+        }
+
+        function isInsideSVG(clientX, clientY) {
+            const svg = activeSVG();
+            if (!svg || !Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+            const rect = svg.getBoundingClientRect();
+            return clientX >= rect.left && clientX <= rect.right &&
+                   clientY >= rect.top && clientY <= rect.bottom;
+        }
+
+        function clientToRoot(clientX, clientY) {
+            const svg = activeSVG();
+            if (!svg) return null;
+            try {
+                const matrix = svg.getScreenCTM();
+                if (!matrix) return null;
+                return new DOMPoint(clientX, clientY).matrixTransform(matrix.inverse());
+            } catch (err) {
+                return null;
+            }
+        }
+
+        function pathLocalToRoot(path) {
+            const svg = activeSVG();
+            if (!svg || !path) return null;
+            try {
+                const rootScreen = svg.getScreenCTM();
+                const pathScreen = path.getScreenCTM();
+                if (!rootScreen || !pathScreen) return null;
+                return rootScreen.inverse().multiply(pathScreen);
+            } catch (err) {
+                return null;
+            }
+        }
+
+        function ensureBrushUI() {
+            const svg = activeSVG();
+            if (!svg) return false;
+            if (brushUI && brushUI.ownerSVGElement === svg) return true;
+
+            brushUI = document.createElementNS(SVGNS, 'g');
+            brushUI.setAttribute('id', 'brushui');
+
+            brushGesture = document.createElementNS(SVGNS, 'path');
+            brushGesture.setAttribute('id', 'brushgesture');
+            brushGesture.style.display = 'none';
+            brushUI.appendChild(brushGesture);
+
+            brushCursor = document.createElementNS(SVGNS, 'circle');
+            brushCursor.setAttribute('id', 'brushcursor');
+            brushCursor.style.display = 'none';
+            brushUI.appendChild(brushCursor);
+
+            svg.appendChild(brushUI);
+            return true;
+        }
+
+        function resetBrushUI() {
+            brushUI = null;
+            brushCursor = null;
+            brushGesture = null;
+        }
+
+        function updateBrushCursor(clientX, clientY) {
+            lastPointerX = clientX;
+            lastPointerY = clientY;
+            if (!ensureBrushUI()) return;
+
+            const visible = isBrushTool() && !isHandActive() &&
+                isInsideSVG(clientX, clientY);
+            const point = visible ? clientToRoot(clientX, clientY) : null;
+            if (!point) {
+                brushCursor.style.display = 'none';
+                return;
+            }
+            brushCursor.setAttribute('cx', point.x);
+            brushCursor.setAttribute('cy', point.y);
+            brushCursor.setAttribute('r', brushSize / 2);
+            brushCursor.setAttribute('class', tool === 'brush-add' ? 'add' : 'subtract');
+            brushCursor.style.display = '';
+        }
+
+        function drawBrushGesture() {
+            if (!ensureBrushUI() || !brushPoints.length) return;
+            let d = 'M' + brushPoints[0][0] + ' ' + brushPoints[0][1];
+            if (brushPoints.length === 1) {
+                d += 'l0.001 0';
+            } else {
+                for (let i = 1; i < brushPoints.length; i++) {
+                    d += 'L' + brushPoints[i][0] + ' ' + brushPoints[i][1];
+                }
+            }
+            brushGesture.setAttribute('d', d);
+            brushGesture.setAttribute('stroke-width', brushSize);
+            brushGesture.setAttribute('class', tool === 'brush-add' ? 'add' : 'subtract');
+            brushGesture.style.display = '';
+        }
+
+        function appendBrushPoint(clientX, clientY, force) {
+            if (!brushActive) return;
+            if (brushLastClient && !force) {
+                const dx = clientX - brushLastClient[0];
+                const dy = clientY - brushLastClient[1];
+                if (dx * dx + dy * dy < 2.25) return;
+            }
+            const point = clientToRoot(clientX, clientY);
+            if (!point) return;
+            brushPoints.push([point.x, point.y]);
+            brushLastClient = [clientX, clientY];
+            // Keep exceptionally long gestures bounded while retaining their
+            // complete connected silhouette.
+            if (brushPoints.length > 4096) {
+                brushPoints = brushPoints.filter((_, index) =>
+                    index === 0 || index === brushPoints.length - 1 || index % 2 === 0);
+            }
+            drawBrushGesture();
+        }
+
+        function beginBrushStroke(e) {
+            if (e.button !== 0 || !selectedBrushPath() ||
+                !isInsideSVG(e.clientX, e.clientY)) return false;
+            brushActive = true;
+            brushPoints = [];
+            brushLastClient = null;
+            appendBrushPoint(e.clientX, e.clientY, true);
+            e.preventDefault();
+            return true;
+        }
+
+        function finishBrushStroke(e) {
+            if (!brushActive) return false;
+            appendBrushPoint(e.clientX, e.clientY, true);
+            brushActive = false;
+
+            const path = selectedBrushPath();
+            const paths = shapePaths();
+            const pathIndex = path ? paths.indexOf(path) : -1;
+            const matrix = pathLocalToRoot(path);
+            const points = brushPoints;
+            brushPoints = [];
+            brushLastClient = null;
+
+            if (pathIndex >= 0 && matrix && points.length) {
+                const committedGesture = brushGesture;
+                try {
+                    window.webkit.messageHandlers.brushStroke.postMessage({
+                        pathIndex: pathIndex,
+                        operation: tool === 'brush-add' ? 'add' : 'subtract',
+                        diameter: brushSize,
+                        points: points,
+                        localToRoot: [matrix.a, matrix.b, matrix.c,
+                                      matrix.d, matrix.e, matrix.f]
+                    });
+                    // The model normally replaces the SVG immediately. This is
+                    // only a fallback for an invalid/no-op message.
+                    setTimeout(() => {
+                        if (committedGesture && committedGesture.isConnected) {
+                            committedGesture.style.display = 'none';
+                        }
+                    }, 1200);
+                } catch (err) {
+                    if (brushGesture) brushGesture.style.display = 'none';
+                }
+            } else if (brushGesture) {
+                brushGesture.style.display = 'none';
+            }
+            updateBrushCursor(e.clientX, e.clientY);
+            return true;
+        }
+
+        function cancelBrushStroke() {
+            brushActive = false;
+            brushPoints = [];
+            brushLastClient = null;
+            if (brushGesture) brushGesture.style.display = 'none';
+        }
+
         let panning = false, panStartX = 0, panStartY = 0, panTx = 0, panTy = 0;
         document.addEventListener('mousedown', e => {
-            if (!spaceDown) {
-                if (tool === 'wand') {
+            lastPointerX = e.clientX;
+            lastPointerY = e.clientY;
+            if (!isHandActive()) {
+                if (isBrushTool()) {
+                    beginBrushStroke(e);
+                } else if (tool === 'wand') {
                     clearLasso();
                     lassoActive = true;
                     lassoPts = [[e.clientX, e.clientY]];
@@ -425,7 +752,13 @@ struct SVGPreviewView: NSViewRepresentable {
             panTx = tx; panTy = ty;
             e.preventDefault();
         });
+
         document.addEventListener('mousemove', e => {
+            updateBrushCursor(e.clientX, e.clientY);
+            if (brushActive) {
+                appendBrushPoint(e.clientX, e.clientY, false);
+                return;
+            }
             if (marquee) {
                 marquee.x1 = e.clientX; marquee.y1 = e.clientY;
                 const dx = e.clientX - marquee.x0, dy = e.clientY - marquee.y0;
@@ -448,8 +781,14 @@ struct SVGPreviewView: NSViewRepresentable {
             tx = panTx + e.clientX - panStartX;
             ty = panTy + e.clientY - panStartY;
             wrap.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+            updateBrushCursor(e.clientX, e.clientY);
         });
+
         document.addEventListener('mouseup', e => {
+            if (brushActive) {
+                finishBrushStroke(e);
+                return;
+            }
             if (marquee) {
                 if (marqueeMoved) {
                     applyMarquee(marquee.x0, marquee.y0, marquee.x1, marquee.y1, e.shiftKey);
@@ -467,6 +806,19 @@ struct SVGPreviewView: NSViewRepresentable {
             panning = false;
             document.body.classList.remove('panning');
             rebuildPoints();
+            updateBrushCursor(e.clientX, e.clientY);
+        });
+
+        document.addEventListener('mouseleave', e => {
+            if (brushActive && e.buttons === 0) cancelBrushStroke();
+            updateBrushCursor(null, null);
+        });
+        window.addEventListener('blur', () => {
+            cancelBrushStroke();
+            if (panning) {
+                panning = false;
+                document.body.classList.remove('panning');
+            }
         });
 
         // ---- Magic wand lasso (W): select shapes in an area, scroll to
@@ -582,7 +934,7 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         document.addEventListener('wheel', e => {
-            if (tool !== 'wand' || !candidates.length) return;
+            if (tool !== 'wand' || isHandActive() || !candidates.length) return;
             e.preventDefault();
             const sizes = candidates.map(c => c.size);
             // Smallest shape always stays selected; that's the point of the tool.
@@ -718,7 +1070,8 @@ struct SVGPreviewView: NSViewRepresentable {
         }
 
         document.addEventListener('click', e => {
-            if (spaceDown) return;
+            if (isHandActive()) return;
+            if (isBrushTool()) return;   // don't let the trailing click deselect
             if (tool === 'zoom') {
                 zoomAt(e.clientX, e.clientY, (altDown || e.altKey) ? 1 / 1.5 : 1.5);
                 return;
@@ -744,8 +1097,6 @@ struct SVGPreviewView: NSViewRepresentable {
         });
 
         // ---- Control point overlay (selected shape only) ----
-        const SVGNS = 'http://www.w3.org/2000/svg';
-
         function parseTranslate(tr) {
             if (!tr) return [0, 0];
             const i = tr.indexOf('translate(');
@@ -812,14 +1163,24 @@ struct SVGPreviewView: NSViewRepresentable {
             const old = s.querySelector('#ctrlpts');
             if (old) old.remove();
             const paths = shapePaths();
-            paths.forEach(p => p.classList.remove('wandsel'));
-            if (spaceDown || !selectedIndices.length) return;
+            paths.forEach(p => {
+                p.classList.remove('wandsel');
+                p.classList.remove('brush-target');
+            });
+            if (isHandActive() || !selectedIndices.length) return;
             if (wandMode) {
                 // Wand selections highlight whole shapes, not control points.
                 selectedIndices.forEach(idx => {
                     const p = paths[idx];
                     if (p && p.getAttribute('d')) p.classList.add('wandsel');
                 });
+                return;
+            }
+            if (isBrushTool()) {
+                const target = paths[selectedIndices[0]];
+                if (target && target.style.display !== 'none') {
+                    target.classList.add('brush-target');
+                }
                 return;
             }
             const out = { anchors: [], controls: [], handles: [] };
