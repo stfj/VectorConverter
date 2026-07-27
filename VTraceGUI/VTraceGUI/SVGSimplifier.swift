@@ -51,6 +51,10 @@ nonisolated enum SVGSimplifier {
         /// Colors available to the manual grouping UI after the automatic
         /// OkLAB budget has been applied, but before manual groups are applied.
         var automaticColors: [PaletteColor]
+        /// Post-OkLAB, pre-manual fill for each rendered path, in document
+        /// order. The preview uses this stable source palette to recolor the
+        /// live DOM while a group color is being dragged.
+        var automaticPathColors: [String?]
         var automaticColorCount: Int
         /// Distinct fill colors after automatic reduction and manual grouping.
         var outputColorCount: Int
@@ -75,12 +79,13 @@ nonisolated enum SVGSimplifier {
             budget: settings.colorBudget
         )
         let automaticColors = palette(in: automaticallyReduced)
-        let svg = applyingManualColors(manualColors, to: automaticallyReduced)
-        let outputColors = palette(in: svg).count
         if Task.isCancelled { return nil }
-        let ns = svg as NSString
+        let ns = automaticallyReduced as NSString
         let regex = try! NSRegularExpression(pattern: "d=\"([^\"]*)\"")
-        let matches = regex.matches(in: svg, range: NSRange(location: 0, length: ns.length))
+        let matches = regex.matches(
+            in: automaticallyReduced,
+            range: NSRange(location: 0, length: ns.length)
+        )
 
         var output = ""
         output.reserveCapacity(svg.count)
@@ -143,12 +148,15 @@ nonisolated enum SVGSimplifier {
         // separate SVG transform instead of becoming part of `d`, so changing
         // simplification or making another point/brush edit cannot move the
         // user's shape or repeatedly bake the translation into its geometry.
-        let positionedOutput = applyingShapeOffsets(shapeOffsets, to: output)
-        return Result(svg: positionedOutput, pathCount: pathIndex,
+        let positionedAutomatic = applyingShapeOffsets(shapeOffsets, to: output)
+        let finalOutput = applyingManualColors(manualColors, to: positionedAutomatic)
+        let outputColors = palette(in: finalOutput).count
+        return Result(svg: finalOutput, pathCount: pathIndex,
                       inputPointCount: inputPoints, outputPointCount: outputPoints,
                       outputNodeCount: outputNodes,
                       inputColorCount: inputColors.count, inputColors: inputColors,
                       automaticColors: automaticColors,
+                      automaticPathColors: pathFillColors(in: positionedAutomatic),
                       automaticColorCount: automaticColors.count,
                       outputColorCount: outputColors)
     }
@@ -246,6 +254,34 @@ nonisolated enum SVGSimplifier {
             counts[hex, default: 0] += 1
         }
         return order.map { PaletteColor(hex: $0, count: counts[$0] ?? 0) }
+    }
+
+    /// Extracts one fill per top-level path without changing path identity.
+    /// VTracer emits explicit six-digit hex fills, while a nil entry keeps the
+    /// array aligned if a future input path has no supported fill attribute.
+    private static func pathFillColors(in svg: String) -> [String?] {
+        let ns = svg as NSString
+        let pathRegex = try! NSRegularExpression(
+            pattern: "<path\\b[^>]*>",
+            options: [.caseInsensitive]
+        )
+        let fillRegex = try! NSRegularExpression(
+            pattern: "fill=\"(#[0-9A-Fa-f]{6})\"",
+            options: [.caseInsensitive]
+        )
+        let paths = pathRegex.matches(
+            in: svg,
+            range: NSRange(location: 0, length: ns.length)
+        )
+        return paths.map { path in
+            let tag = ns.substring(with: path.range)
+            let tagNS = tag as NSString
+            let range = NSRange(location: 0, length: tagNS.length)
+            guard let fill = fillRegex.firstMatch(in: tag, range: range) else {
+                return nil
+            }
+            return tagNS.substring(with: fill.range(at: 1)).uppercased()
+        }
     }
 
     /// Applies user-defined groups to the already OkLAB-reduced palette. Rules

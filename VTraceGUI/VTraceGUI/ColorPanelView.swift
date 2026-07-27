@@ -36,7 +36,7 @@ struct ColorPanelView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "eye")
                         .foregroundStyle(.secondary)
-                    Text("Hover to highlight. Click to edit. Drag a tile onto another to group; drag a small swatch to move just that color.")
+                    Text("Hold Space while hovering to highlight. Click to edit. Drag a tile onto another to group; drag a small swatch to move just that color.")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -46,7 +46,8 @@ struct ColorPanelView: View {
                     ForEach(model.manualColorGroups) { group in
                         ColorGroupTile(
                             group: group,
-                            isHighlighted: model.highlightedColorGroupID == group.id,
+                            isHighlighted: model.colorPreviewSpaceDown
+                                && model.highlightedColorGroupID == group.id,
                             isDropTarget: dropTargetGroupID == group.id,
                             isPaletteDragging: activeDrag != nil,
                             setHighlight: {
@@ -335,12 +336,12 @@ private struct ColorGroupTile: View {
             changed: dragChanged,
             ended: dragEnded
         )
-        .help("Hover to highlight \(group.colorHex.uppercased()). Click to edit; drag onto another color to group.")
+        .help("Hold Space while hovering to highlight \(group.colorHex.uppercased()). Click to edit; drag onto another color to group.")
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("Group color \(group.colorHex.uppercased())")
         .accessibilityValue(groupAccessibilityValue)
-        .accessibilityHint("Click to edit its hex or HSL color, or drag onto another color to group them")
+        .accessibilityHint("Click to edit its hex or HSV color, or drag onto another color to group them")
         .accessibilityAction(AccessibilityActionKind.default, openEditor)
     }
 
@@ -419,7 +420,7 @@ private struct PaletteMemberSwatch: View {
             .frame(width: 24, height: 24)
             .contentShape(Rectangle())
             .onTapGesture(perform: edit)
-            .help("\(color.hex.uppercased()) — \(color.count) shape\(color.count == 1 ? "" : "s"). Hover to highlight its group; click to edit; drag to regroup.")
+            .help("\(color.hex.uppercased()) — \(color.count) shape\(color.count == 1 ? "" : "s"). Hold Space while hovering to highlight its group; click to edit; drag to regroup.")
             .paletteDragSource(
                 PaletteDragPayload(kind: .member, hex: color.hex),
                 changed: dragChanged,
@@ -519,7 +520,7 @@ private struct GroupColorEditor: View {
     @State private var hexText: String
     @State private var hue: Double
     @State private var saturation: Double
-    @State private var lightness: Double
+    @State private var value: Double
     @State private var showsInvalidHex = false
     @FocusState private var isHexFocused: Bool
 
@@ -529,11 +530,11 @@ private struct GroupColorEditor: View {
         self.apply = apply
 
         let normalized = ColorMath.normalizedHex(colorHex) ?? "#808080"
-        let hsl = ColorMath.hsl(from: normalized)
+        let hsv = ColorMath.hsv(from: normalized)
         _hexText = State(initialValue: normalized)
-        _hue = State(initialValue: hsl.h)
-        _saturation = State(initialValue: hsl.s)
-        _lightness = State(initialValue: hsl.l)
+        _hue = State(initialValue: hsv.h)
+        _saturation = State(initialValue: hsv.s)
+        _value = State(initialValue: hsv.v)
     }
 
     var body: some View {
@@ -588,39 +589,55 @@ private struct GroupColorEditor: View {
 
             Divider()
 
-            hslSlider(
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Saturation / Value")
+                    .font(.caption.weight(.semibold))
+
+                SaturationValueField(
+                    hue: hue,
+                    saturation: saturation,
+                    value: value,
+                    update: applySaturationValue
+                )
+                .frame(height: 142)
+            }
+
+            hsvSlider(
                 label: "H",
+                accessibilityLabel: "Hue",
                 value: Binding(
                     get: { hue },
                     set: { newValue in
                         hue = newValue
-                        applyHSL(h: newValue, s: saturation, l: lightness)
+                        applyHSV(h: newValue, s: saturation, v: value)
                     }
                 ),
                 range: 0...360,
                 suffix: "°"
             )
 
-            hslSlider(
+            hsvSlider(
                 label: "S",
+                accessibilityLabel: "Saturation",
                 value: Binding(
                     get: { saturation },
                     set: { newValue in
                         saturation = newValue
-                        applyHSL(h: hue, s: newValue, l: lightness)
+                        applyHSV(h: hue, s: newValue, v: value)
                     }
                 ),
                 range: 0...100,
                 suffix: "%"
             )
 
-            hslSlider(
-                label: "L",
+            hsvSlider(
+                label: "V",
+                accessibilityLabel: "Value",
                 value: Binding(
-                    get: { lightness },
+                    get: { value },
                     set: { newValue in
-                        lightness = newValue
-                        applyHSL(h: hue, s: saturation, l: newValue)
+                        value = newValue
+                        applyHSV(h: hue, s: saturation, v: newValue)
                     }
                 ),
                 range: 0...100,
@@ -635,10 +652,11 @@ private struct GroupColorEditor: View {
     }
 
     private var liveHex: String {
-        ColorMath.hex(h: hue, s: saturation, l: lightness)
+        ColorMath.hex(h: hue, s: saturation, v: value)
     }
 
-    private func hslSlider(label: String,
+    private func hsvSlider(label: String,
+                           accessibilityLabel: String,
                            value: Binding<Double>,
                            range: ClosedRange<Double>,
                            suffix: String) -> some View {
@@ -647,7 +665,7 @@ private struct GroupColorEditor: View {
                 .font(.caption.weight(.semibold))
                 .frame(width: 12)
             Slider(value: value, in: range)
-                .accessibilityLabel(label == "H" ? "Hue" : label == "S" ? "Saturation" : "Lightness")
+                .accessibilityLabel(accessibilityLabel)
                 .accessibilityValue("\(Int(value.wrappedValue.rounded()))\(suffix)")
             Text("\(Int(value.wrappedValue.rounded()))\(suffix)")
                 .font(.caption.monospacedDigit())
@@ -667,19 +685,123 @@ private struct GroupColorEditor: View {
         apply(normalized)
     }
 
-    private func applyHSL(h: Double, s: Double, l: Double) {
-        let hex = ColorMath.hex(h: h, s: s, l: l)
+    private func applySaturationValue(saturation: Double, value: Double) {
+        self.saturation = saturation
+        self.value = value
+        applyHSV(h: hue, s: saturation, v: value)
+    }
+
+    private func applyHSV(h: Double, s: Double, v: Double) {
+        let hex = ColorMath.hex(h: h, s: s, v: v)
         hexText = hex
         showsInvalidHex = false
         apply(hex)
     }
 
     private func sync(to hex: String) {
-        let hsl = ColorMath.hsl(from: hex)
+        let hsv = ColorMath.hsv(from: hex)
         hexText = hex
-        hue = hsl.h
-        saturation = hsl.s
-        lightness = hsl.l
+        hue = hsv.h
+        saturation = hsv.s
+        value = hsv.v
+    }
+}
+
+private struct SaturationValueField: View {
+    let hue: Double
+    let saturation: Double
+    let value: Double
+    let update: (Double, Double) -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(
+                        Color(
+                            hue: normalizedHue,
+                            saturation: 1,
+                            brightness: 1
+                        )
+                    )
+
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(
+                        LinearGradient(
+                            colors: [.white, .white.opacity(0)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(
+                        LinearGradient(
+                            colors: [.clear, .black],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            }
+            .overlay {
+                Circle()
+                    .fill(.clear)
+                    .frame(width: 15, height: 15)
+                    .overlay {
+                        Circle()
+                            .stroke(.white, lineWidth: 2)
+                    }
+                    .overlay {
+                        Circle()
+                            .stroke(.black.opacity(0.65), lineWidth: 1)
+                            .padding(2)
+                    }
+                    .shadow(color: .black.opacity(0.35), radius: 1, y: 1)
+                    .position(markerPosition(in: size))
+                    .allowsHitTesting(false)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(Color.primary.opacity(0.25))
+                    .allowsHitTesting(false)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        updateColor(at: gesture.location, in: size)
+                    }
+            )
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Saturation and value")
+        .accessibilityValue(
+            "\(Int(saturation.rounded())) percent saturation, "
+                + "\(Int(value.rounded())) percent value"
+        )
+        .accessibilityHint("Drag horizontally for saturation and vertically for value")
+    }
+
+    private var normalizedHue: Double {
+        let wrapped = ((hue.truncatingRemainder(dividingBy: 360)) + 360)
+            .truncatingRemainder(dividingBy: 360)
+        return wrapped / 360
+    }
+
+    private func markerPosition(in size: CGSize) -> CGPoint {
+        CGPoint(
+            x: min(max(saturation / 100, 0), 1) * size.width,
+            y: (1 - min(max(value / 100, 0), 1)) * size.height
+        )
+    }
+
+    private func updateColor(at location: CGPoint, in size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        let nextSaturation = min(max(location.x / size.width, 0), 1) * 100
+        let nextValue = (1 - min(max(location.y / size.height, 0), 1)) * 100
+        update(nextSaturation, nextValue)
     }
 }
 
@@ -785,18 +907,17 @@ private enum ColorMath {
         )
     }
 
-    static func hsl(from hex: String) -> (h: Double, s: Double, l: Double) {
+    static func hsv(from hex: String) -> (h: Double, s: Double, v: Double) {
         let rgb = rgb(from: normalizedHex(hex) ?? "#808080")
         let maximum = max(rgb.r, max(rgb.g, rgb.b))
         let minimum = min(rgb.r, min(rgb.g, rgb.b))
         let delta = maximum - minimum
-        let lightness = (maximum + minimum) / 2
 
         guard delta > .ulpOfOne else {
-            return (0, 0, lightness * 100)
+            return (0, 0, maximum * 100)
         }
 
-        let saturation = delta / (1 - abs(2 * lightness - 1))
+        let saturation = maximum > 0 ? delta / maximum : 0
         let sector: Double
         if maximum == rgb.r {
             sector = ((rgb.g - rgb.b) / delta).truncatingRemainder(dividingBy: 6)
@@ -807,16 +928,16 @@ private enum ColorMath {
         }
 
         let hue = (sector * 60 + 360).truncatingRemainder(dividingBy: 360)
-        return (hue, saturation * 100, lightness * 100)
+        return (hue, saturation * 100, maximum * 100)
     }
 
-    static func hex(h: Double, s: Double, l: Double) -> String {
+    static func hex(h: Double, s: Double, v: Double) -> String {
         let hue = ((h.truncatingRemainder(dividingBy: 360)) + 360)
             .truncatingRemainder(dividingBy: 360)
         let saturation = min(max(s / 100, 0), 1)
-        let lightness = min(max(l / 100, 0), 1)
+        let value = min(max(v / 100, 0), 1)
 
-        let chroma = (1 - abs(2 * lightness - 1)) * saturation
+        let chroma = value * saturation
         let sector = hue / 60
         let x = chroma * (1 - abs(sector.truncatingRemainder(dividingBy: 2) - 1))
         let partial: (Double, Double, Double)
@@ -830,7 +951,7 @@ private enum ColorMath {
         default: partial = (chroma, 0, x)
         }
 
-        let match = lightness - chroma / 2
+        let match = value - chroma
         let red = Int(((partial.0 + match) * 255).rounded())
         let green = Int(((partial.1 + match) * 255).rounded())
         let blue = Int(((partial.2 + match) * 255).rounded())

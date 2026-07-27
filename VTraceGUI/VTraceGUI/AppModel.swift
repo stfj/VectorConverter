@@ -70,6 +70,14 @@ final class AppModel {
     /// also hides the selected shape's control points.
     private(set) var spaceDown = false
 
+    /// True while Space is held outside text entry or a modal panel. Palette
+    /// hover uses this separately from `spaceDown`, since temporary panning
+    /// remains limited to keyboard focus inside the preview.
+    private(set) var colorPreviewSpaceDown = false
+    /// Remembers when palette preview consumed Space-down, so its matching
+    /// key-up is also swallowed even if the pointer leaves the tile first.
+    private var paletteSpaceConsumesKey = false
+
     /// True while ⌥ is held (zoom tool shows the zoom-out cursor).
     private(set) var altDown = false
     /// Temporary Space-to-pan applies only while the preview owns keyboard
@@ -138,6 +146,9 @@ final class AppModel {
     /// Palette after automatic OkLAB reduction, in first-appearance order.
     /// Manual grouping is exposed when this post-smash palette is small.
     private(set) var colorPalette: [PaletteColor] = []
+    /// Stable post-OkLAB source fill for each preview path. Manual group color
+    /// changes are applied against these in the web view for immediate feedback.
+    private(set) var automaticPathColors: [String?] = []
     private var manualColorGroupRules: [ManualColorGroupRule] = []
     /// The palette group whose rendered regions are emphasized in the preview.
     /// This is presentation-only state and is intentionally not persisted.
@@ -178,6 +189,8 @@ final class AppModel {
     private var brushWork: Task<String?, Never>?
     private var brushSessionGeneration: Int?
     private var brushJobID = 0
+    @ObservationIgnored
+    private var focusLossObservers: [NSObjectProtocol] = []
     /// Incremented when pending brush feedback must be cleared in the preview.
     private(set) var brushFeedbackVersion = 0
     private var postProcessRequestedAfterBrush = false
@@ -203,6 +216,7 @@ final class AppModel {
             .appendingPathComponent("VTraceGUI-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
         try? FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         installKeyMonitor()
+        installFocusLossObservers()
     }
 
     // MARK: - Keyboard (space = peek under control points, delete = remove shape)
@@ -212,6 +226,29 @@ final class AppModel {
             guard let self else { return event }
             return self.handleKey(event)
         }
+    }
+
+    private func installFocusLossObservers() {
+        for name in [NSApplication.didResignActiveNotification,
+                     NSWindow.didResignKeyNotification] {
+            let observer = NotificationCenter.default.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.clearTransientKeyState()
+                }
+            }
+            focusLossObservers.append(observer)
+        }
+    }
+
+    private func clearTransientKeyState() {
+        spaceDown = false
+        colorPreviewSpaceDown = false
+        paletteSpaceConsumesKey = false
+        altDown = false
     }
 
     /// Returns nil when the event is consumed.
@@ -224,8 +261,16 @@ final class AppModel {
         // Leave panels (open/save dialogs) and any text editing alone.
         guard NSApp.modalWindow == nil,
               let window = event.window,
-              !(window is NSPanel) else { return event }
-        if window.firstResponder is NSTextView { return event }
+              !(window is NSPanel) else {
+            colorPreviewSpaceDown = false
+            paletteSpaceConsumesKey = false
+            return event
+        }
+        if window.firstResponder is NSTextView {
+            colorPreviewSpaceDown = false
+            paletteSpaceConsumesKey = false
+            return event
+        }
 
         // Tool switching and brush sizing. No command/option/control modifiers,
         // so app shortcuts such as ⌘Z and ⌘E keep their normal meanings.
@@ -276,7 +321,21 @@ final class AppModel {
 
         switch event.keyCode {
         case 49: // space: hand tool while held (and hide control points)
-            guard previewHasKeyboardFocus else { return event }
+            let shouldConsumeForPalette: Bool
+            if event.type == .keyDown {
+                if !event.isARepeat { colorPreviewSpaceDown = true }
+                if highlightedColorGroupID != nil {
+                    paletteSpaceConsumesKey = true
+                }
+                shouldConsumeForPalette = paletteSpaceConsumesKey
+            } else {
+                colorPreviewSpaceDown = false
+                shouldConsumeForPalette = paletteSpaceConsumesKey
+                paletteSpaceConsumesKey = false
+            }
+            guard previewHasKeyboardFocus else {
+                return shouldConsumeForPalette ? nil : event
+            }
             if event.type == .keyDown {
                 if !event.isARepeat { spaceDown = true }
             } else {
@@ -694,7 +753,8 @@ final class AppModel {
     /// The preview matches this against its rendered paths, so every visible
     /// region with that color is highlighted together.
     var highlightedColorHex: String? {
-        guard let highlightedColorGroupID else { return nil }
+        guard colorPreviewSpaceDown,
+              let highlightedColorGroupID else { return nil }
         return manualColorGroups.first {
             $0.id == highlightedColorGroupID
         }?.colorHex
@@ -858,10 +918,14 @@ final class AppModel {
     /// edits keep the current slider budget and are applied to its resulting
     /// post-smash palette.
     private func finishManualColorChange() {
+        outputColorCount = Set(manualColorGroups.map(\.colorHex)).count
         schedulePostProcess()
     }
 
-    private var manualColorMapping: [String: String] {
+    /// Current palette mapping sent to the preview for direct, live DOM
+    /// recoloring. The normal post-process still bakes the same mapping into
+    /// `svgText` for saving, copying, and export.
+    var previewManualColorMapping: [String: String] {
         var mapping: [String: String] = [:]
         for rule in manualColorGroupRules {
             guard let output = PaletteHex.normalize(rule.colorHex) else { continue }
@@ -990,6 +1054,7 @@ final class AppModel {
         colorCount = 0
         outputColorCount = 0
         colorPalette = []
+        automaticPathColors = []
         manualColorGroupRules = []
         highlightedColorGroupID = nil
         lastConversionTime = nil
@@ -1219,6 +1284,7 @@ final class AppModel {
         nodeCount = nil
         colorCount = 0
         outputColorCount = 0
+        automaticPathColors = []
         pathOverrides = document.pathOverrides
         editedGeometry = document.editedGeometry
         pathOffsets = (document.pathOffsets ?? [:]).filter {
@@ -1544,7 +1610,7 @@ final class AppModel {
         let deleted = deletedPaths
         let edited = editedGeometry
         let offsets = pathOffsets
-        let manualColors = manualColorMapping
+        let manualColors = previewManualColorMapping
         let work = Task.detached(priority: .userInitiated) {
             SVGSimplifier.process(raw, settings: simplify, overrides: overrides,
                                   deleted: deleted, editedGeometry: edited,
@@ -1563,6 +1629,7 @@ final class AppModel {
             }
             return
         }
+        automaticPathColors = result.automaticPathColors
         svgText = result.svg
         isPreviewReady = true
         pathCount = result.pathCount

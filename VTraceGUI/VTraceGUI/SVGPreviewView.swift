@@ -11,6 +11,11 @@ import SwiftUI
 import WebKit
 import UniformTypeIdentifiers
 
+private struct PreviewPaletteState: Encodable, Equatable {
+    let pathColors: [String?]
+    let mapping: [String: String]
+}
+
 /// WKWebView registers itself for drags, so image drops over the preview never
 /// reach SwiftUI's onDrop. Intercept them here and hand them to the app instead.
 final class ImageDropWebView: WKWebView {
@@ -116,6 +121,19 @@ struct SVGPreviewView: NSViewRepresentable {
                 coordinator.run(webView, "setSVG(\(json), \(model.previewRevision))")
             }
         }
+        let paletteState = PreviewPaletteState(
+            pathColors: model.automaticPathColors,
+            mapping: model.previewManualColorMapping
+        )
+        if coordinator.sentPaletteState != paletteState {
+            coordinator.sentPaletteState = paletteState
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            if let data = try? encoder.encode(paletteState),
+               let json = String(data: data, encoding: .utf8) {
+                coordinator.run(webView, "setManualColors(\(json))")
+            }
+        }
         if coordinator.sentPreviewRevision != model.previewRevision {
             coordinator.sentPreviewRevision = model.previewRevision
             coordinator.run(webView, "setPreviewRevision(\(model.previewRevision))")
@@ -209,6 +227,7 @@ struct SVGPreviewView: NSViewRepresentable {
         var sentMoveEnabled = true
         var sentBrushFeedbackVersion = 0
         var sentHighlightedColorHex: String?
+        fileprivate var sentPaletteState: PreviewPaletteState?
         var sentPreviewRevision = 0
         var sentSelection: Int?
         var sentLasso: Set<Int> = []
@@ -520,6 +539,8 @@ struct SVGPreviewView: NSViewRepresentable {
         const overlay = document.getElementById('overlay');
         const SVGNS = 'http://www.w3.org/2000/svg';
         let highlightedColor = null;
+        let automaticPathColors = [];
+        let manualColorMapping = {};
 
         function setImage(src, revision) {
             clearBrushFeedback();
@@ -562,6 +583,7 @@ struct SVGPreviewView: NSViewRepresentable {
             rebuildPoints();
             if (redrawLiveBrush) drawBrushGesture();
             updateBrushCursor(lastPointerX, lastPointerY);
+            applyManualColors();
             applyColorHighlight();
         }
 
@@ -573,6 +595,24 @@ struct SVGPreviewView: NSViewRepresentable {
                 return '#' + trimmed.slice(1).split('').map(c => c + c).join('');
             }
             return null;
+        }
+
+        function applyManualColors() {
+            shapePaths().forEach((path, index) => {
+                const source = normalizedHex(automaticPathColors[index]);
+                if (!source) return;
+                const replacement = normalizedHex(manualColorMapping[source]) || source;
+                path.setAttribute('fill', replacement);
+            });
+            applyColorHighlight();
+        }
+
+        function setManualColors(state) {
+            automaticPathColors = Array.isArray(state && state.pathColors)
+                ? state.pathColors : [];
+            manualColorMapping = state && typeof state.mapping === 'object'
+                && state.mapping !== null ? state.mapping : {};
+            applyManualColors();
         }
 
         function applyColorHighlight() {
