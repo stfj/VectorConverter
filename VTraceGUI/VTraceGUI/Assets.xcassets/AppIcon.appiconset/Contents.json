@@ -37,13 +37,13 @@
       "size" : "128x128"
     },
     {
-      "filename" : "icon 3.png",
+      "filename" : "icon 2.png",
       "idiom" : "mac",
       "scale" : "1x",
       "size" : "256x256"
     },
     {
-      "filename" : "icon 2.png",
+      "filename" : "icon 3.png",
       "idiom" : "mac",
       "scale" : "2x",
       "size" : "256x256"
